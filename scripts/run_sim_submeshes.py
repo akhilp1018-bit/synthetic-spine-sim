@@ -154,8 +154,8 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # -----------------------------
 # Physical sampling
 # -----------------------------
-XY_UM_PER_PX = 0.0002
-Z_STEP_UM = 0.0005
+XY_UM_PER_PX = 0.002
+Z_STEP_UM = 0.005
 Z_STEP_NM = Z_STEP_UM * 1000.0
 
 # -----------------------------
