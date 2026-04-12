@@ -154,8 +154,8 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # -----------------------------
 # Physical sampling
 # -----------------------------
-XY_UM_PER_PX = 0.2
-Z_STEP_UM = 0.5
+XY_UM_PER_PX = 0.05
+Z_STEP_UM = 0.1
 Z_STEP_NM = Z_STEP_UM * 1000.0
 
 # -----------------------------
@@ -188,7 +188,7 @@ GAUSS_PSF_SHAPE_ZYX = (13, 65, 65)
 # -----------------------------
 # Detection threshold
 # -----------------------------
-SPINE_MASK_REL_THRESHOLD = 0.05
+SPINE_MASK_REL_THRESHOLD = 0.2
 
 print("=== SETTINGS ===")
 print(f"DENDRITE_PATH={DENDRITE_PATH}")
