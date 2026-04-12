@@ -25,19 +25,31 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
 
-def prepare_mesh_for_sim(mesh_path, use_h01_preprocess=False):
+def prepare_mesh_for_sim(mesh_path, use_h01_preprocess=False, scale_to_nm=1.0, recenter=False):
     """
     Returns a mesh path that Mitsuba can load.
 
-    If use_h01_preprocess=True:
-      - load mesh with trimesh
-      - center mesh at origin
-      - write a temporary .ply and return that path
+    Parameters
+    ----------
+    mesh_path : str
+        Input mesh path.
+    use_h01_preprocess : bool
+        Kept for compatibility with older workflow.
+    scale_to_nm : float
+        Multiply mesh vertices by this factor before export.
+        Example:
+            1.0    -> vertices already in nm
+            1000.0 -> vertices are in um, convert to nm
+    recenter : bool
+        If True, subtract mesh centroid after scaling.
 
-    If use_h01_preprocess=False:
-      - return original mesh_path unchanged
+        IMPORTANT:
+        For separately exported submeshes (dendrite/spines), keep this False,
+        otherwise the parts will lose alignment with each other.
     """
-    if not use_h01_preprocess:
+    need_preprocess = use_h01_preprocess or (scale_to_nm != 1.0) or recenter
+
+    if not need_preprocess:
         return mesh_path
 
     print(f"Preprocessing mesh: {mesh_path}")
@@ -49,17 +61,25 @@ def prepare_mesh_for_sim(mesh_path, use_h01_preprocess=False):
     if mesh.faces is None or len(mesh.faces) == 0:
         raise ValueError(f"Mesh has no faces: {mesh_path}")
 
-    vertices_nm = mesh.vertices.astype(np.float64)
-    center_nm = vertices_nm.mean(axis=0, keepdims=True)
-    vertices_nm = vertices_nm - center_nm
-    mesh.vertices = vertices_nm
+    vertices = mesh.vertices.astype(np.float64)
+
+    # Scale into nanometers if needed
+    vertices = vertices * float(scale_to_nm)
+
+    # Recenter only if explicitly requested
+    if recenter:
+        center = vertices.mean(axis=0, keepdims=True)
+        vertices = vertices - center
+
+    mesh.vertices = vertices
 
     tmp = tempfile.NamedTemporaryFile(suffix=".ply", delete=False)
     tmp_path = tmp.name
     tmp.close()
 
     mesh.export(tmp_path)
-    print(f"Prepared temporary centered mesh: {tmp_path}")
+    print(f"Prepared temporary mesh: {tmp_path}")
+    print(f"Preprocess settings: scale_to_nm={scale_to_nm}, recenter={recenter}")
     return tmp_path
 
 
@@ -115,7 +135,17 @@ SPINE_PATHS = [
     "neuron/spine2.ply",
 ]
 
+# -----------------------------
+# Mesh preprocessing
+# -----------------------------
 USE_H01_PREPROCESS = False
+
+# Blender-exported submeshes are often in um, while this pipeline expects nm.
+# If your Blender exports are in um, use 1000.0 here.
+SUBMESH_SCALE_TO_NM = 1000.0
+
+# Keep False for separately exported submeshes, otherwise alignment breaks.
+SUBMESH_RECENTER = False
 
 OUT_DIR = "scripts/zstack_out"
 PSF_EM_TIF = "scripts/psf_bornwolf_488nm_NA1_xy200nm_z500nm_65x65x13.tif"
@@ -164,6 +194,8 @@ print("=== SETTINGS ===")
 print(f"DENDRITE_PATH={DENDRITE_PATH}")
 print(f"SPINE_PATHS={SPINE_PATHS}")
 print(f"USE_H01_PREPROCESS={USE_H01_PREPROCESS}")
+print(f"SUBMESH_SCALE_TO_NM={SUBMESH_SCALE_TO_NM}")
+print(f"SUBMESH_RECENTER={SUBMESH_RECENTER}")
 print(f"LABELING_MODE={LABELING_MODE}")
 print(f"SPACING_NM={SPACING_NM}")
 print(f"XY_UM_PER_PX={XY_UM_PER_PX} µm/px, Z_STEP_UM={Z_STEP_UM} µm")
@@ -180,7 +212,12 @@ all_input_paths = [DENDRITE_PATH] + SPINE_PATHS
 sim_paths = []
 
 for p in all_input_paths:
-    sim_p = prepare_mesh_for_sim(p, use_h01_preprocess=USE_H01_PREPROCESS)
+    sim_p = prepare_mesh_for_sim(
+        p,
+        use_h01_preprocess=USE_H01_PREPROCESS,
+        scale_to_nm=SUBMESH_SCALE_TO_NM,
+        recenter=SUBMESH_RECENTER,
+    )
     sim_paths.append(sim_p)
 
 sim_dendrite_path = sim_paths[0]
@@ -359,7 +396,6 @@ vol_dendrite = render_density(rho_dendrite, "dendrite")
 vol_spines = render_density(rho_spines, "spines")
 vol_all = render_density(rho_all, "all")
 
-# Optional individual spine renders
 vol_spine_list = []
 for i, rho_sp in enumerate(rho_spines_list, start=1):
     vol_sp = render_density(rho_sp, f"spine_{i}")
@@ -382,7 +418,7 @@ print("spine_mask voxels:", int(spine_mask.sum().item()))
 # -----------------------------
 # 7) Save outputs
 # -----------------------------
-base_tag = f"submesh_membrane_ROI{int(ROI_SIZE_UM_X)}x{int(ROI_SIZE_UM_Y)}um_{psf_tag}_spacing{int(SPACING_NM)}nm"
+base_tag = f"submesh_membrane_{psf_tag}_spacing{int(SPACING_NM)}nm"
 
 save_tensor_stack_u16(vol_dendrite, OUT_DIR, f"{base_tag}_dendrite", XY_UM_PER_PX, Z_STEP_UM)
 save_tensor_stack_u16(vol_spines, OUT_DIR, f"{base_tag}_spines", XY_UM_PER_PX, Z_STEP_UM)
@@ -399,6 +435,8 @@ meta_lines = [
     f"DENDRITE_PATH={DENDRITE_PATH}",
     f"SPINE_PATHS={SPINE_PATHS}",
     f"USE_H01_PREPROCESS={USE_H01_PREPROCESS}",
+    f"SUBMESH_SCALE_TO_NM={SUBMESH_SCALE_TO_NM}",
+    f"SUBMESH_RECENTER={SUBMESH_RECENTER}",
     f"LABELING_MODE={LABELING_MODE}",
     f"PSF_MODE={psf_tag}",
     f"lambda_nm={LAMBDA_NM}",
