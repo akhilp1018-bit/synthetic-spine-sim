@@ -167,7 +167,7 @@ MARGIN = 0.05
 # -----------------------------
 # Labeling / density settings
 # -----------------------------
-LABELING_MODE = "membrane"   # "membrane" or "pseudofilled"
+LABELING_MODE = "pseudofilled"   # "membrane" or "pseudofilled"
 SPACING_LIST_NM = [200]
 BATCH_FACES = 2048
 PSEUDOFILL_SIGMA_ZYX = (2.0, 2.5, 2.5)
@@ -201,7 +201,7 @@ INTENSITY_VAR_SEED = 0
 USE_NOISE = True
 NOISE_SWEEP = False
 NOISE_NUM_STEPS = 20
-NOISE_PEAK_PHOTONS_MAX = 2000.0
+NOISE_PEAK_PHOTONS_MAX = 500.0
 NOISE_PEAK_PHOTONS_MIN = 50.0
 NOISE_READ_STD = 1.0
 NOISE_SEED = 0
