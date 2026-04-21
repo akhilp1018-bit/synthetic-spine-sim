@@ -167,8 +167,8 @@ MARGIN = 0.05
 # -----------------------------
 # Labeling / density settings
 # -----------------------------
-LABELING_MODE = "pseudofilled"   # "membrane" or "pseudofilled"
-SPACING_LIST_NM = [100]
+LABELING_MODE = "membrane"   # "membrane" or "pseudofilled"
+SPACING_LIST_NM = [200]
 BATCH_FACES = 2048
 PSEUDOFILL_SIGMA_ZYX = (2.0, 2.5, 2.5)
 
