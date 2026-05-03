@@ -141,7 +141,7 @@ SPINE_PATHS = sorted([
     if f.startswith("spine") and f.endswith(".ply")
 ])
 
-SPINE_PATHS = SPINE_PATHS[:20]  # testing
+#SPINE_PATHS = SPINE_PATHS[:20]  # testing
 
 print("DENDRITE_PATH:", DENDRITE_PATH)
 print("Number of spines found:", len(SPINE_PATHS))
