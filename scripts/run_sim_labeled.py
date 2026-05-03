@@ -150,7 +150,7 @@ print("First few spines:", SPINE_PATHS[:5])
 # Mesh preprocessing
 # -----------------------------
 USE_H01_PREPROCESS = False
-SUBMESH_SCALE_TO_NM = 1000.0
+SUBMESH_SCALE_TO_NM = 1000_000.0
 SUBMESH_RECENTER = False
 
 OUT_DIR = "scripts/zstack_out"
@@ -207,7 +207,7 @@ INTENSITY_VAR_SEED = 0
 # -----------------------------
 # Noise settings
 # -----------------------------
-USE_NOISE = True
+USE_NOISE = False
 NOISE_SWEEP = False
 NOISE_NUM_STEPS = 20
 NOISE_PEAK_PHOTONS_MAX = 500.0
