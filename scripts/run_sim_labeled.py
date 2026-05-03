@@ -131,12 +131,21 @@ def save_u16_stack(stack_u16, out_dir, tag, xy_um_per_px, z_step_um):
 # -----------------------------
 # Paths
 # -----------------------------
-DENDRITE_PATH = "neuron/dendrite1.ply"
-SPINE_PATHS = [
-    "neuron/spine1.ply",
-    "neuron/spine2.ply",
-]
+BASE_DIR = "neuron/sample_001"
 
+DENDRITE_PATH = os.path.join(BASE_DIR, "dendrite00.ply")
+
+SPINE_PATHS = sorted([
+    os.path.join(BASE_DIR, f)
+    for f in os.listdir(BASE_DIR)
+    if f.startswith("spine") and f.endswith(".ply")
+])
+
+SPINE_PATHS = SPINE_PATHS[:20]  # testing
+
+print("DENDRITE_PATH:", DENDRITE_PATH)
+print("Number of spines found:", len(SPINE_PATHS))
+print("First few spines:", SPINE_PATHS[:5])
 # -----------------------------
 # Mesh preprocessing
 # -----------------------------
@@ -151,8 +160,8 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # -----------------------------
 # Physical sampling
 # -----------------------------
-XY_UM_PER_PX = 0.002
-Z_STEP_UM = 0.005
+XY_UM_PER_PX = 0.2
+Z_STEP_UM = 0.5
 Z_STEP_NM = Z_STEP_UM * 1000.0
 
 # -----------------------------
