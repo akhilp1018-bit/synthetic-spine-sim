@@ -12,22 +12,27 @@ PRED_FILES = {
 OUT_DIR = "scripts/zstack_out/deepd3_exports"
 os.makedirs(OUT_DIR, exist_ok=True)
 
-THRESHOLD = 0.5
-
 
 def save_u16_tif(path, arr):
+    """
+    Save probability map preserving continuous prediction values.
+    DeepD3 outputs are in range [0, 1].
+    We scale them to uint16 for ImageJ/Fiji compatibility.
+    """
     arr = arr.astype(np.float32)
     arr = np.clip(arr, 0, 1)
+
     arr_u16 = (arr * 65535).astype(np.uint16)
-    tifffile.imwrite(path, arr_u16, imagej=True)
 
-
-def save_mask_tif(path, arr):
-    mask = (arr > THRESHOLD).astype(np.uint16) * 65535
-    tifffile.imwrite(path, mask, imagej=True)
+    tifffile.imwrite(
+        path,
+        arr_u16,
+        imagej=True,
+    )
 
 
 for model_name, pred_path in PRED_FILES.items():
+
     print(f"\nProcessing {model_name}: {pred_path}")
 
     data = fl.load(pred_path)
@@ -35,27 +40,35 @@ for model_name, pred_path in PRED_FILES.items():
     dendrites = data["dendrites"]
     spines = data["spines"]
 
-    print("dendrites:", dendrites.shape, dendrites.min(), dendrites.max())
-    print("spines:", spines.shape, spines.min(), spines.max())
+    print(
+        "dendrites:",
+        dendrites.shape,
+        dendrites.min(),
+        dendrites.max(),
+    )
 
-    # Probability maps
+    print(
+        "spines:",
+        spines.shape,
+        spines.min(),
+        spines.max(),
+    )
+
+    # Save original probability predictions
     save_u16_tif(
-        os.path.join(OUT_DIR, f"{model_name}_dendrite_probability.tif"),
+        os.path.join(
+            OUT_DIR,
+            f"{model_name}_dendrite_probability.tif",
+        ),
         dendrites,
     )
+
     save_u16_tif(
-        os.path.join(OUT_DIR, f"{model_name}_spine_probability.tif"),
+        os.path.join(
+            OUT_DIR,
+            f"{model_name}_spine_probability.tif",
+        ),
         spines,
     )
 
-    # Binary masks
-    save_mask_tif(
-        os.path.join(OUT_DIR, f"{model_name}_dendrite_mask_thr{THRESHOLD}.tif"),
-        dendrites,
-    )
-    save_mask_tif(
-        os.path.join(OUT_DIR, f"{model_name}_spine_mask_thr{THRESHOLD}.tif"),
-        spines,
-    )
-
-print("\nDone. Exported DeepD3 predictions to:", OUT_DIR)
+print("\nDone. Exported DeepD3 probability predictions to:", OUT_DIR)
