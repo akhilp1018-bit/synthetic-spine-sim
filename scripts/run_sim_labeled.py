@@ -536,6 +536,18 @@ def save_dataset_outputs(
                 XY_UM_PER_PX,
                 Z_STEP_UM,
             )
+            spine_i_max = float(vol_sp.max().item())
+            spine_i_threshold = SPINE_MASK_REL_THRESHOLD * spine_i_max if spine_i_max > 0 else 0.0
+            spine_i_mask = (vol_sp > spine_i_threshold).to(torch.float32)
+
+            save_u16_stack(
+            binary_mask_to_u16(spine_i_mask),
+            OUT_DIR,
+            f"{base_tag}_spine{i}_mask",
+            XY_UM_PER_PX,
+            Z_STEP_UM,
+            )
+
 
     for i, peak_photons in enumerate(noise_levels):
         vol_curr = vol_all_clean.clone()
