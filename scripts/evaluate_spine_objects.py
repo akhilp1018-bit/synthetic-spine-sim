@@ -75,7 +75,7 @@ def evaluate_instance_level(gt_masks, pred_prob, threshold):
                 best_iou = iou
                 best_pred_id = pred_id
 
-        if best_iou >= IOU_THRESHOLD:
+        if best_iou >= IOU_THRESHOLD and  best_pred_id not in matched_pred_ids:
             tp += 1
             matched_pred_ids.add(best_pred_id)
             matched_ious.append(best_iou)
