@@ -12,7 +12,7 @@ for title, path in FILES.items():
     plt.figure(figsize=(6, 5))
 
     for model in df["Model"].unique():
-        d = df[df["Model"] == model]
+        d = df[df["Model"] == model].sort_values("Recall")
         plt.plot(d["Recall"], d["Precision"], marker="o", label=model)
 
     plt.xlabel("Recall")
