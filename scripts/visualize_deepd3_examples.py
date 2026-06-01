@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 
 
 IMAGE_PATH = "scripts/zstack_out/zstack_labeled_membrane_bornwolf_fiji_spacing200nm_image.tif"
-
 SPINE_PROB_PATH = "scripts/zstack_out/deepd3_exports/32F_94nm_spine_probability.tif"
 
 GT_SPINE_PATTERN = (
@@ -13,8 +12,8 @@ GT_SPINE_PATTERN = (
     "zstack_labeled_membrane_bornwolf_fiji_spacing200nm_spine[0-9]*_mask.tif"
 )
 
-THRESHOLD = 0.37
-OUT_PATH = "scripts/zstack_out/deepd3_spine_visualization_example.png"
+THRESHOLDS = [0.10, 0.37, 0.70]
+OUT_PATH = "scripts/zstack_out/deepd3_spine_threshold_visualization.png"
 
 
 def normalize(img):
@@ -39,7 +38,6 @@ def load_combined_gt(pattern):
         raise FileNotFoundError("No GT spine masks found.")
 
     combined = None
-
     for p in paths:
         m = tifffile.imread(p) > 0
         if combined is None:
@@ -57,12 +55,6 @@ def crop_to_common_shape(*arrays):
 
 
 def make_overlay(gt, pred):
-    """
-    RGB overlay:
-    Red   = GT only / missed region
-    Green = prediction only / FP region
-    Yellow = overlap / TP region
-    """
     overlay = np.zeros((*gt.shape, 3), dtype=np.float32)
 
     tp = gt & pred
@@ -82,41 +74,66 @@ def main():
 
     image, prob, gt = crop_to_common_shape(image, prob, gt)
 
-    pred = prob >= THRESHOLD
-
-    # choose slice with maximum GT spine signal
     z_scores = gt.sum(axis=(1, 2))
     z = int(np.argmax(z_scores))
 
     print("Selected z slice:", z)
     print("GT voxels in slice:", int(gt[z].sum()))
-    print("Prediction voxels in slice:", int(pred[z].sum()))
 
     img_z = normalize(image[z])
     prob_z = prob[z]
-    pred_z = pred[z]
     gt_z = gt[z]
-    overlay_z = make_overlay(gt_z, pred_z)
 
-    fig, axes = plt.subplots(1, 5, figsize=(18, 4))
+    fig, axes = plt.subplots(
+        len(THRESHOLDS) + 1,
+        4,
+        figsize=(14, 12),
+    )
 
-    axes[0].imshow(img_z, cmap="gray")
-    axes[0].set_title("Rendered image")
+    axes[0, 0].imshow(img_z, cmap="gray")
+    axes[0, 0].set_title(f"Rendered image, z={z}")
 
-    axes[1].imshow(prob_z, cmap="gray", vmin=0, vmax=1)
-    axes[1].set_title("DeepD3 probability")
+    axes[0, 1].imshow(prob_z, cmap="gray", vmin=0, vmax=1)
+    axes[0, 1].set_title("DeepD3 probability")
 
-    axes[2].imshow(pred_z, cmap="gray")
-    axes[2].set_title(f"Prediction thr={THRESHOLD}")
+    axes[0, 2].imshow(gt_z, cmap="gray")
+    axes[0, 2].set_title("GT spine mask")
 
-    axes[3].imshow(gt_z, cmap="gray")
-    axes[3].set_title("GT spine mask")
+    axes[0, 3].axis("off")
+    axes[0, 3].text(
+        0.0,
+        0.5,
+        "Overlay colors:\n"
+        "Yellow = overlap / TP region\n"
+        "Red = GT only / FN region\n"
+        "Green = prediction only / FP region",
+        fontsize=11,
+        va="center",
+    )
 
-    axes[4].imshow(img_z, cmap="gray")
-    axes[4].imshow(overlay_z, alpha=0.65)
-    axes[4].set_title("Overlay: GT / Pred / overlap")
+    for row, thr in enumerate(THRESHOLDS, start=1):
+        pred = prob >= thr
+        pred_z = pred[z]
+        overlay_z = make_overlay(gt_z, pred_z)
 
-    for ax in axes:
+        axes[row, 0].imshow(img_z, cmap="gray")
+        axes[row, 0].set_title(f"Rendered image, z={z}")
+
+        axes[row, 1].imshow(pred_z, cmap="gray")
+        axes[row, 1].set_title(f"Prediction threshold = {thr:.2f}")
+
+        axes[row, 2].imshow(gt_z, cmap="gray")
+        axes[row, 2].set_title("GT spine mask")
+
+        axes[row, 3].imshow(img_z, cmap="gray")
+        axes[row, 3].imshow(overlay_z, alpha=0.65)
+        axes[row, 3].set_title(f"Overlay at threshold {thr:.2f}")
+
+        print(
+            f"thr={thr:.2f}: prediction voxels in slice = {int(pred_z.sum())}"
+        )
+
+    for ax in axes.ravel():
         ax.axis("off")
 
     plt.tight_layout()
