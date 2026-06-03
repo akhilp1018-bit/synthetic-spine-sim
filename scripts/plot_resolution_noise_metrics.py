@@ -17,6 +17,7 @@ noise_df = df[
 
 noise_df["photons"] = noise_df["photons"].astype(int)
 
+
 # -------------------------
 # 1) PSNR vs photon count
 # -------------------------
@@ -40,12 +41,9 @@ plt.title("Effect of noise on image quality")
 plt.xscale("log")
 plt.legend()
 plt.grid(True, which="both")
-
 plt.tight_layout()
-plt.savefig(
-    f"{OUT_DIR}/psnr_vs_photons.png",
-    dpi=300
-)
+
+plt.savefig(f"{OUT_DIR}/psnr_vs_photons.png", dpi=300)
 plt.close()
 
 
@@ -72,12 +70,9 @@ plt.title("Effect of noise on structural similarity")
 plt.xscale("log")
 plt.legend()
 plt.grid(True, which="both")
-
 plt.tight_layout()
-plt.savefig(
-    f"{OUT_DIR}/ssim_vs_photons.png",
-    dpi=300
-)
+
+plt.savefig(f"{OUT_DIR}/ssim_vs_photons.png", dpi=300)
 plt.close()
 
 
@@ -88,44 +83,47 @@ resolution_df = df[
     df["comparison_type"] == "resolution_effect_resized_to_94nm"
 ].copy()
 
-resolution_points = [
-    {
-        "xy_resolution_nm": 94,
-        "PSNR_dB": noise_df[
-            (noise_df["xy_resolution_nm"] == 94)
-            & (noise_df["photons"] == 2000)
-        ]["PSNR_dB"].values[0],
-    }
-]
-
-for _, row in resolution_df.iterrows():
-    resolution_points.append({
-        "xy_resolution_nm": int(row["xy_resolution_nm"]),
-        "PSNR_dB": float(row["PSNR_dB"]),
-    })
-
-resolution_plot_df = pd.DataFrame(resolution_points)
-resolution_plot_df = resolution_plot_df.sort_values("xy_resolution_nm")
+resolution_df["xy_resolution_nm"] = resolution_df["xy_resolution_nm"].astype(int)
+resolution_df = resolution_df.sort_values("xy_resolution_nm")
 
 plt.figure(figsize=(6, 4))
 
 plt.plot(
-    resolution_plot_df["xy_resolution_nm"],
-    resolution_plot_df["PSNR_dB"],
+    resolution_df["xy_resolution_nm"],
+    resolution_df["PSNR_dB"],
     marker="o",
     linewidth=2
 )
 
 plt.xlabel("XY resolution (nm)")
-plt.ylabel("PSNR (dB)")
+plt.ylabel("PSNR vs 94 nm clean (dB)")
 plt.title("Effect of spatial resolution on image quality")
 plt.grid(True)
-
 plt.tight_layout()
-plt.savefig(
-    f"{OUT_DIR}/psnr_vs_resolution.png",
-    dpi=300
+
+plt.savefig(f"{OUT_DIR}/psnr_vs_resolution.png", dpi=300)
+plt.close()
+
+
+# -------------------------
+# 4) SSIM vs XY resolution
+# -------------------------
+plt.figure(figsize=(6, 4))
+
+plt.plot(
+    resolution_df["xy_resolution_nm"],
+    resolution_df["SSIM"],
+    marker="o",
+    linewidth=2
 )
+
+plt.xlabel("XY resolution (nm)")
+plt.ylabel("SSIM vs 94 nm clean")
+plt.title("Effect of spatial resolution on structural similarity")
+plt.grid(True)
+plt.tight_layout()
+
+plt.savefig(f"{OUT_DIR}/ssim_vs_resolution.png", dpi=300)
 plt.close()
 
 
@@ -133,3 +131,4 @@ print("Saved:")
 print(f"{OUT_DIR}/psnr_vs_photons.png")
 print(f"{OUT_DIR}/ssim_vs_photons.png")
 print(f"{OUT_DIR}/psnr_vs_resolution.png")
+print(f"{OUT_DIR}/ssim_vs_resolution.png")

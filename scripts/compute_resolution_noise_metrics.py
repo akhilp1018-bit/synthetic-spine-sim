@@ -10,7 +10,7 @@ IN_DIR = "scripts/zstack_out/resolution_noise_study"
 OUT_CSV = os.path.join(IN_DIR, "resolution_noise_metrics.csv")
 
 RESOLUTIONS = [94, 200, 300]
-PHOTONS = [2000, 1025, 50]
+PHOTONS = [50, 375, 700, 1025, 1350, 1675, 2000]
 
 
 def load_stack(path):
