@@ -1,9 +1,8 @@
 import os
-import re
 import numpy as np
 import pandas as pd
 import tifffile
-from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+from skimage.metrics import structural_similarity
 from skimage.transform import resize
 
 
@@ -29,14 +28,29 @@ def resize_to_reference(arr, ref_shape):
     ).astype(np.float32)
 
 
-def metrics(ref, test):
-    psnr = peak_signal_noise_ratio(ref, test, data_range=1.0)
-    ssim = structural_similarity(
-        ref,
-        test,
-        data_range=1.0,
-        channel_axis=None,
-    )
+def compute_psnr(ref, test):
+    mse = np.mean((ref - test) ** 2)
+    return float(10 * np.log10(1.0 / (mse + 1e-12)))
+
+
+def compute_mean_ssim_slice_by_slice(ref, test):
+    ssim_values = []
+
+    for z in range(ref.shape[0]):
+        ssim_values.append(
+            structural_similarity(
+                ref[z],
+                test[z],
+                data_range=1.0
+            )
+        )
+
+    return float(np.mean(ssim_values))
+
+
+def compute_metrics(ref, test):
+    psnr = compute_psnr(ref, test)
+    ssim = compute_mean_ssim_slice_by_slice(ref, test)
     return psnr, ssim
 
 
@@ -62,7 +76,7 @@ for res in RESOLUTIONS:
 
         noisy = load_stack(noisy_path)
 
-        psnr, ssim = metrics(clean, noisy)
+        psnr, ssim = compute_metrics(clean, noisy)
 
         rows.append({
             "comparison_type": "noise_effect_same_resolution",
@@ -74,6 +88,12 @@ for res in RESOLUTIONS:
             "SSIM": ssim,
         })
 
+        print(
+            f"Noise effect | {res} nm | photons={p} | "
+            f"PSNR={psnr:.2f} dB | SSIM={ssim:.4f}"
+        )
+
+
 # -------------------------
 # 2) Resolution effect
 # 94 nm clean as reference
@@ -83,6 +103,7 @@ ref94_path = os.path.join(
     IN_DIR,
     "zstack_membrane_xy94nm_z500nm_clean.tif"
 )
+
 ref94 = load_stack(ref94_path)
 
 for res in [200, 300]:
@@ -94,7 +115,7 @@ for res in [200, 300]:
     clean = load_stack(clean_path)
     clean_resized = resize_to_reference(clean, ref94.shape)
 
-    psnr, ssim = metrics(ref94, clean_resized)
+    psnr, ssim = compute_metrics(ref94, clean_resized)
 
     rows.append({
         "comparison_type": "resolution_effect_resized_to_94nm",
@@ -106,8 +127,14 @@ for res in [200, 300]:
         "SSIM": ssim,
     })
 
+    print(
+        f"Resolution effect | 94 nm clean vs {res} nm clean resized | "
+        f"PSNR={psnr:.2f} dB | SSIM={ssim:.4f}"
+    )
+
+
 df = pd.DataFrame(rows)
 df.to_csv(OUT_CSV, index=False)
 
-print(df)
 print("\nSaved:", OUT_CSV)
+print(df)
