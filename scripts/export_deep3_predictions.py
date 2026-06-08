@@ -5,11 +5,11 @@ import tifffile
 
 
 PRED_FILES = {
-    "32F": "scripts/zstack_out/prediction_32F.fl",
-    "32F_94nm": "scripts/zstack_out/prediction_32F_94nm.fl",
+    "32F": "scripts/zstack_out/sample_002/xy94_z500_spacing100/prediction_32F.fl",
+    "32F_94nm": "scripts/zstack_out/sample_002/xy94_z500_spacing100/prediction_32F_94nm.fl",
 }
 
-OUT_DIR = "scripts/zstack_out/deepd3_exports"
+OUT_DIR = "scripts/zstack_out/sample_002/xy94_z500_spacing100/deepd3_exports"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 
