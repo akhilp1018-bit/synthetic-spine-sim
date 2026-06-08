@@ -8,31 +8,31 @@ from scipy.ndimage import label
 # -----------------------------
 # Paths
 # -----------------------------
+BASE = "scripts/zstack_out/sample_002/xy94_z500_spacing100"
+
 GT_SPINE_PATTERN = (
-    "scripts/zstack_out/"
-    "zstack_labeled_membrane_bornwolf_fiji_spacing200nm_spine[0-9]*_mask.tif"
+    BASE + "/zstack_sample_002_labeled_membrane_bornwolf_fiji_xy94_z500_spacing100_spine[0-9]*_mask.tif"
 )
 
 GT_DENDRITE = (
-    "scripts/zstack_out/"
-    "zstack_labeled_membrane_bornwolf_fiji_spacing200nm_dendrite_mask.tif"
+    BASE + "/zstack_sample_002_labeled_membrane_bornwolf_fiji_xy94_z500_spacing100_dendrite_mask.tif"
 )
 
 SPINE_PROBS = {
-    "32F": "scripts/zstack_out/deepd3_exports/32F_spine_probability.tif",
-    "32F_94nm": "scripts/zstack_out/deepd3_exports/32F_94nm_spine_probability.tif",
+    "32F": BASE + "/deepd3_exports/32F_spine_probability.tif",
+    "32F_94nm": BASE + "/deepd3_exports/32F_94nm_spine_probability.tif",
 }
 
 DENDRITE_PROBS = {
-    "32F": "scripts/zstack_out/deepd3_exports/32F_dendrite_probability.tif",
-    "32F_94nm": "scripts/zstack_out/deepd3_exports/32F_94nm_dendrite_probability.tif",
+    "32F": BASE + "/deepd3_exports/32F_dendrite_probability.tif",
+    "32F_94nm": BASE + "/deepd3_exports/32F_94nm_dendrite_probability.tif",
 }
 
 THRESHOLDS = np.linspace(0.01, 0.99, 50)
 IOU_THRESHOLD = 0.1
 
-OUT_SPINE_CSV = "scripts/zstack_out/spine_instance_pr_metrics.csv"
-OUT_DENDRITE_CSV = "scripts/zstack_out/dendrite_voxel_pr_metrics.csv"
+OUT_SPINE_CSV = BASE + "/spine_instance_pr_metrics.csv"
+OUT_DENDRITE_CSV = BASE + "/dendrite_voxel_pr_metrics.csv"
 
 
 # -----------------------------
