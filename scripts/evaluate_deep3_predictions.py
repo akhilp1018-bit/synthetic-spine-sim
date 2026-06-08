@@ -8,14 +8,14 @@ from scipy.ndimage import label
 # -----------------------------
 # Paths
 # -----------------------------
-BASE = "scripts/zstack_out/sample_002/xy94_z500_spacing100"
+BASE = "scripts/zstack_out/sample_001/xy200_z500_spacing200"
 
 GT_SPINE_PATTERN = (
-    BASE + "/zstack_sample_002_labeled_membrane_bornwolf_fiji_xy94_z500_spacing100_spine[0-9]*_mask.tif"
+    BASE + "/zstack_sample_001_labeled_membrane_bornwolf_fiji_xy200_z500_spacing200_spine[0-9]*_mask.tif"
 )
 
 GT_DENDRITE = (
-    BASE + "/zstack_sample_002_labeled_membrane_bornwolf_fiji_xy94_z500_spacing100_dendrite_mask.tif"
+    BASE + "/zstack_sample_001_labeled_membrane_bornwolf_fiji_xy200_z500_spacing200_dendrite_mask.tif"
 )
 
 SPINE_PROBS = {
