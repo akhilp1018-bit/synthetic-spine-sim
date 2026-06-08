@@ -150,7 +150,7 @@ print("First few spines:", SPINE_PATHS[:5])
 # Mesh preprocessing
 # -----------------------------
 USE_H01_PREPROCESS = False
-SUBMESH_SCALE_TO_NM = 1000_00
+SUBMESH_SCALE_TO_NM = 1000_0
 SUBMESH_RECENTER = False
 
 OUT_DIR = "scripts/zstack_out/sample_002"
