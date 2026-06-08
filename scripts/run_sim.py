@@ -93,7 +93,7 @@ def make_noise_levels(num_steps, peak_max, peak_min):
 MESH_PATH = "neuron/h01_mesh_3896803064.ply"
 USE_H01_PREPROCESS = True
 
-OUT_DIR = "scripts/zstack_out"
+OUT_DIR = "scripts/zstack_out/resolution_noise_study"
 PSF_EM_TIF = "scripts/psf_bornwolf_488nm_NA1_xy200nm_z500nm_65x65x13.tif"
 
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -101,7 +101,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # -----------------------------
 # Physical sampling
 # -----------------------------
-XY_UM_PER_PX = 0.2
+XY_UM_PER_PX =0.2
 Z_STEP_UM = 0.5
 Z_STEP_NM = Z_STEP_UM * 1000.0
 
@@ -125,8 +125,8 @@ RNG_SEED = 0
 # -----------------------------
 # Labeling / density settings
 # -----------------------------
-LABELING_MODE = "pseudofilled"   # "membrane" or "pseudofilled"
-SPACING_LIST_NM = [100]
+LABELING_MODE = "membrane"   # "membrane" or "pseudofilled"
+SPACING_LIST_NM = [200]
 BATCH_FACES = 2048
 PSEUDOFILL_SIGMA_ZYX = (2.0, 2.5, 2.5)
 
@@ -161,9 +161,9 @@ INTENSITY_VAR_SEED = 0
 # -----------------------------
 # Noise settings
 # -----------------------------
-USE_NOISE = True
-NOISE_SWEEP = True
-NOISE_NUM_STEPS = 20
+USE_NOISE = False
+NOISE_SWEEP = False
+NOISE_NUM_STEPS = 5
 NOISE_PEAK_PHOTONS_MAX = 2000.0   # cleaner
 NOISE_PEAK_PHOTONS_MIN = 50.0     # noisier
 NOISE_READ_STD = 1.0
