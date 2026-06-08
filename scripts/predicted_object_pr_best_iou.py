@@ -1,4 +1,5 @@
 import glob
+import os
 import numpy as np
 import pandas as pd
 import tifffile
@@ -28,9 +29,9 @@ SPINE_PROBS = {
     "32F_94nm": BASE + "/deepd3_exports/32F_94nm_spine_probability.tif",
 }
 
-OUT_CSV = BASE + "/predicted_object_pr_scores_iou.csv"
-OUT_PR = BASE + "/predicted_object_pr_curve_iou.png"
-OUT_ROC = BASE + "/predicted_object_roc_curve_iou.png"
+OUT_CSV = BASE + "/predicted_object_pr_scores_best_iou.csv"
+OUT_PR = BASE + "/predicted_object_pr_curve_best_iou.png"
+OUT_ROC = BASE + "/predicted_object_roc_curve_best_iou.png"
 
 
 # -----------------------------
@@ -62,28 +63,21 @@ def crop_to_common_shape(a, b):
     return a[:z, :y, :x], b[:z, :y, :x]
 
 
-def top_percent_mean(values, percent=5):
-    if values.size == 0:
-        return 0.0
-
-    k = max(1, int(np.ceil(values.size * percent / 100.0)))
-    top_values = np.partition(values, -k)[-k:]
-
-    return float(np.mean(top_values))
-
-
 def compute_iou(a, b):
     inter = np.logical_and(a, b).sum()
     union = np.logical_or(a, b).sum()
+    return float(inter / union) if union > 0 else 0.0
 
-    if union == 0:
+
+def top_percent_mean(values, percent=5):
+    if values.size == 0:
         return 0.0
-
-    return float(inter / union)
+    k = max(1, int(np.ceil(values.size * percent / 100.0)))
+    return float(np.mean(np.partition(values, -k)[-k:]))
 
 
 # -----------------------------
-# Load GT spine union
+# Load individual GT masks
 # -----------------------------
 gt_paths = sorted(glob.glob(GT_SPINE_PATTERN))
 print("Found GT spine masks:", len(gt_paths))
@@ -91,20 +85,20 @@ print("Found GT spine masks:", len(gt_paths))
 if len(gt_paths) == 0:
     raise FileNotFoundError("No GT spine masks found.")
 
-gt_union = None
+gt_masks = []
 
 for gt_path in gt_paths:
-    gt = load_mask(gt_path)
-
-    if gt_union is None:
-        gt_union = gt.copy()
-    else:
-        gt, gt_union = crop_to_common_shape(gt, gt_union)
-        gt_union = gt_union | gt
+    gt_masks.append(
+        {
+            "path": gt_path,
+            "name": os.path.basename(gt_path),
+            "mask": load_mask(gt_path),
+        }
+    )
 
 
 # -----------------------------
-# Build predicted-object dataset
+# Evaluate predicted objects
 # -----------------------------
 rows = []
 
@@ -112,7 +106,6 @@ for model_name, prob_path in SPINE_PROBS.items():
     print("\nProcessing:", model_name)
 
     prob = load_probability(prob_path)
-    gt_u, prob = crop_to_common_shape(gt_union, prob)
 
     candidate_mask = prob >= OBJECT_THRESHOLD
     pred_labels, pred_count = label(candidate_mask)
@@ -134,10 +127,22 @@ for model_name, prob_path in SPINE_PROBS.items():
 
         vals = prob[obj]
 
-        iou_with_gt = compute_iou(obj, gt_u)
-        overlap_gt_voxels = int(np.logical_and(obj, gt_u).sum())
+        best_iou = 0.0
+        best_gt_name = None
+        best_overlap_voxels = 0
 
-        object_label = 1 if iou_with_gt >= IOU_THRESHOLD else 0
+        for gt in gt_masks:
+            gt_mask, obj_cropped = crop_to_common_shape(gt["mask"], obj)
+
+            iou = compute_iou(obj_cropped, gt_mask)
+            overlap_voxels = int(np.logical_and(obj_cropped, gt_mask).sum())
+
+            if iou > best_iou:
+                best_iou = iou
+                best_gt_name = gt["name"]
+                best_overlap_voxels = overlap_voxels
+
+        object_label = 1 if best_iou >= IOU_THRESHOLD else 0
 
         if object_label == 1:
             positive_objects += 1
@@ -153,8 +158,9 @@ for model_name, prob_path in SPINE_PROBS.items():
                 "max_prob": float(vals.max()) if vals.size else 0.0,
                 "mean_prob": float(vals.mean()) if vals.size else 0.0,
                 "object_voxels": obj_size,
-                "overlap_gt_voxels": overlap_gt_voxels,
-                "iou_with_gt": iou_with_gt,
+                "best_gt_spine": best_gt_name,
+                "best_iou": float(best_iou),
+                "best_overlap_voxels": int(best_overlap_voxels),
                 "iou_threshold": IOU_THRESHOLD,
             }
         )
@@ -196,7 +202,7 @@ for model_name in df["model"].unique():
 
 plt.xlabel("Recall")
 plt.ylabel("Precision")
-plt.title(f"Predicted-object spine PR curve, IoU ≥ {IOU_THRESHOLD}")
+plt.title(f"Predicted-object spine PR curve, best IoU ≥ {IOU_THRESHOLD}")
 plt.xlim(0, 1)
 plt.ylim(0, 1)
 plt.grid(True)
@@ -234,7 +240,7 @@ for model_name in df["model"].unique():
 
 plt.xlabel("False positive rate")
 plt.ylabel("True positive rate")
-plt.title(f"Predicted-object spine ROC curve, IoU ≥ {IOU_THRESHOLD}")
+plt.title(f"Predicted-object spine ROC curve, best IoU ≥ {IOU_THRESHOLD}")
 plt.xlim(0, 1)
 plt.ylim(0, 1)
 plt.grid(True)
