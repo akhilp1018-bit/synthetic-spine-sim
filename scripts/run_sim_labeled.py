@@ -131,7 +131,7 @@ def save_u16_stack(stack_u16, out_dir, tag, xy_um_per_px, z_step_um):
 # -----------------------------
 # Paths
 # -----------------------------
-BASE_DIR = "neuron/sample_001"
+BASE_DIR = "neuron/sample_002"
 
 DENDRITE_PATH = os.path.join(BASE_DIR, "dendrite00.ply")
 
@@ -153,14 +153,14 @@ USE_H01_PREPROCESS = False
 SUBMESH_SCALE_TO_NM = 1000_000.0
 SUBMESH_RECENTER = False
 
-OUT_DIR = "scripts/zstack_out"
+OUT_DIR = "scripts/zstack_out/sample_002"
 PSF_EM_TIF = "scripts/psf_bornwolf_488nm_NA1_xy200nm_z500nm_65x65x13.tif"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # -----------------------------
 # Physical sampling
 # -----------------------------
-XY_UM_PER_PX = 0.2
+XY_UM_PER_PX = 0.094
 Z_STEP_UM = 0.5
 Z_STEP_NM = Z_STEP_UM * 1000.0
 
