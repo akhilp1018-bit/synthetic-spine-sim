@@ -139,20 +139,20 @@ print("First few spines:", SPINE_PATHS[:5])
 # Current Andreas-suggested setting: 94 nm XY, 500 nm Z.
 # ----------------------------------------------------------
 EXPERIMENTS = [
-    {
-        "tag": "xy94_z500_spacing200",
-        "xy_um_per_px": 0.094,
-        "z_step_um": 0.5,
-        "spacing_nm": 200,
-    },
+    #{
+     #   "tag": "xy94_z500_spacing100",
+      #  "xy_um_per_px": 0.094,
+      #  "z_step_um": 0.5,
+     #   "spacing_nm": 200,
+    #},
 
-    # Example future setting:
-    # {
-    #     "tag": "xy200_z500_spacing200",
-    #     "xy_um_per_px": 0.2,
-    #     "z_step_um": 0.5,
-    #     "spacing_nm": 200,
-    # },
+  
+    {
+         "tag": "xy200_z500_spacing200",
+         "xy_um_per_px": 0.2,
+         "z_step_um": 0.5,
+         "spacing_nm": 200,
+     },
 ]
 
 
