@@ -140,10 +140,10 @@ print("First few spines:", SPINE_PATHS[:5])
 # ----------------------------------------------------------
 EXPERIMENTS = [
     {
-        "tag": "xy94_z500_spacing100",
-        "xy_um_per_px": 0.2,
+        "tag": "xy94_z500_spacing200",
+        "xy_um_per_px": 0.094,
         "z_step_um": 0.5,
-        "spacing_nm": 100,
+        "spacing_nm": 200,
     },
 
     # Example future setting:
