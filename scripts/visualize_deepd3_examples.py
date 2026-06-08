@@ -4,10 +4,10 @@ import tifffile
 import matplotlib.pyplot as plt
 
 
-BASE = "scripts/zstack_out/sample_001/xy200_z500_spacing200"
+BASE = "scripts/zstack_out/sample_002/xy94_z500_spacing100"
 
 IMAGE_PATH = (
-    BASE + "/zstack_sample_001_labeled_membrane_bornwolf_fiji_xy200_z500_spacing200_image.tif"
+    BASE + "/zstack_sample_002_labeled_membrane_bornwolf_fiji_xy94_z500_spacing100_image.tif"
 )
 
 SPINE_PROB_PATH = (
@@ -15,7 +15,7 @@ SPINE_PROB_PATH = (
 )
 
 GT_SPINE_PATTERN = (
-    BASE + "/zstack_sample_001_labeled_membrane_bornwolf_fiji_xy200_z500_spacing200_spine[0-9]*_mask.tif"
+    BASE + "/zstack_sample_002_labeled_membrane_bornwolf_fiji_xy94_z500_spacing100_spine[0-9]*_mask.tif"
 )
 
 THRESHOLDS = [0.05, 0.10, 0.37]
