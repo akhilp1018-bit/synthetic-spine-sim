@@ -163,7 +163,7 @@ USE_H01_PREPROCESS = False
 
 # Your previous labeled submesh workflow used this.
 # Keep the same unless your exported meshes are already in nm.
-SUBMESH_SCALE_TO_NM = 1000_000.0
+SUBMESH_SCALE_TO_NM = 1000_0.0
 
 # IMPORTANT: keep False for separated dendrite/spine submeshes.
 SUBMESH_RECENTER = False
