@@ -5,11 +5,11 @@ import tifffile
 
 
 PRED_FILES = {
-    "32F": "scripts/zstack_out/sample_002/xy94_z500_spacing100/zstack_sample_002_labeled_membrane_bornwolf_fiji_xy94_z500_spacing100_image_32F.prediction",
-    "32F_94nm": "scripts/zstack_out/sample_002/xy94_z500_spacing100/zstack_sample_002_labeled_membrane_bornwolf_fiji_xy94_z500_spacing100_image_32F_94nm.prediction",
+    "32F": "scripts/zstack_out/sample_001/xy200_z500_spacing200/zstack_sample_001_labeled_membrane_bornwolf_fiji_xy200_z500_spacing200_image_32F.prediction",
+    "32F_94nm": "scripts/zstack_out/sample_001/xy200_z500_spacing200/zstack_sample_001_labeled_membrane_bornwolf_fiji_xy200_z500_spacing200_image_32F_94nm.prediction",
 }
 
-OUT_DIR = "scripts/zstack_out/sample_002/xy94_z500_spacing100/deepd3_exports"
+OUT_DIR = "scripts/zstack_out/sample_001/xy200_z500_spacing200/deepd3_exports"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 
