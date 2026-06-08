@@ -5,8 +5,8 @@ import tifffile
 
 
 PRED_FILES = {
-    "32F": "scripts/zstack_out/sample_002/xy94_z500_spacing100/prediction_32F.fl",
-    "32F_94nm": "scripts/zstack_out/sample_002/xy94_z500_spacing100/prediction_32F_94nm.fl",
+    "32F": "scripts/zstack_out/sample_002/xy94_z500_spacing100/zstack_sample_002_labeled_membrane_bornwolf_fiji_xy94_z500_spacing100_image_32F.prediction",
+    "32F_94nm": "scripts/zstack_out/sample_002/xy94_z500_spacing100/zstack_sample_002_labeled_membrane_bornwolf_fiji_xy94_z500_spacing100_image_32F_94nm.prediction",
 }
 
 OUT_DIR = "scripts/zstack_out/sample_002/xy94_z500_spacing100/deepd3_exports"
