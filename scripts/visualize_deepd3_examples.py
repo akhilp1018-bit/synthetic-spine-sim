@@ -4,16 +4,22 @@ import tifffile
 import matplotlib.pyplot as plt
 
 
-IMAGE_PATH = "scripts/zstack_out/zstack_labeled_membrane_bornwolf_fiji_spacing200nm_image.tif"
-SPINE_PROB_PATH = "scripts/zstack_out/deepd3_exports/32F_94nm_spine_probability.tif"
+BASE = "scripts/zstack_out/sample_001/xy200_z500_spacing200"
 
-GT_SPINE_PATTERN = (
-    "scripts/zstack_out/"
-    "zstack_labeled_membrane_bornwolf_fiji_spacing200nm_spine[0-9]*_mask.tif"
+IMAGE_PATH = (
+    BASE + "/zstack_sample_001_labeled_membrane_bornwolf_fiji_xy200_z500_spacing200_image.tif"
 )
 
-THRESHOLDS = [0.10, 0.37, 0.70]
-OUT_PATH = "scripts/zstack_out/deepd3_spine_threshold_visualization.png"
+SPINE_PROB_PATH = (
+    BASE + "/deepd3_exports/32F_94nm_spine_probability.tif"
+)
+
+GT_SPINE_PATTERN = (
+    BASE + "/zstack_sample_001_labeled_membrane_bornwolf_fiji_xy200_z500_spacing200_spine[0-9]*_mask.tif"
+)
+
+THRESHOLDS = [0.05, 0.10, 0.37]
+OUT_PATH = BASE + "/deepd3_spine_threshold_visualization_32F94nm.png"
 
 
 def normalize(img):
@@ -38,6 +44,7 @@ def load_combined_gt(pattern):
         raise FileNotFoundError("No GT spine masks found.")
 
     combined = None
+
     for p in paths:
         m = tifffile.imread(p) > 0
         if combined is None:
@@ -128,10 +135,6 @@ def main():
         axes[row, 3].imshow(img_z, cmap="gray")
         axes[row, 3].imshow(overlay_z, alpha=0.65)
         axes[row, 3].set_title(f"Overlay at threshold {thr:.2f}")
-
-        print(
-            f"thr={thr:.2f}: prediction voxels in slice = {int(pred_z.sum())}"
-        )
 
     for ax in axes.ravel():
         ax.axis("off")
