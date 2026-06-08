@@ -109,8 +109,8 @@ Z_STEP_NM = Z_STEP_UM * 1000.0
 # ROI settings
 # -----------------------------
 USE_ROI = True
-ROI_SIZE_UM_X = 200.0
-ROI_SIZE_UM_Y = 200.0
+ROI_SIZE_UM_X = 100.0
+ROI_SIZE_UM_Y = 100.0
 ROI_CENTER_MODE = "bbox_center"
 MARGIN = 0.05
 
@@ -126,7 +126,7 @@ RNG_SEED = 0
 # Labeling / density settings
 # -----------------------------
 LABELING_MODE = "pseudofilled"   # "membrane" or "pseudofilled"
-SPACING_LIST_NM = [200]
+SPACING_LIST_NM = [100]
 BATCH_FACES = 2048
 PSEUDOFILL_SIGMA_ZYX = (2.0, 2.5, 2.5)
 
