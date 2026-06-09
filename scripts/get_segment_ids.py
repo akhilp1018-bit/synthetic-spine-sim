@@ -25,6 +25,5 @@ print("\nFound segment IDs:")
 print(ids[:20])  # print first 20
 
 # Save to file
-np.savetxt("segment_ids.txt", ids, fmt="%d")
-
+# np.savetxt("segment_ids.txt", ids, fmt="%d")
 print("\nSaved all IDs to segment_ids.txt")
