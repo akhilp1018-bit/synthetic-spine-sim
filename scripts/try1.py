@@ -28,16 +28,17 @@ SPINE_PROBS = {
     "32F_94nm": BASE + "/deepd3_exports/32F_94nm_spine_probability.tif",
 }
 
-OUT_CSV = BASE + "/instancewise_gt_spine_probability_scores.csv"
-OUT_PR = BASE + "/instancewise_gt_spine_probability_pr_curve.png"
-OUT_ROC = BASE + "/instancewise_gt_spine_probability_roc_curve.png"
+OUT_CSV = BASE + "/instancewise_hard_negative_probability_scores.csv"
+OUT_PR = BASE + "/instancewise_hard_negative_pr_curve.png"
+OUT_ROC = BASE + "/instancewise_hard_negative_roc_curve.png"
 
 
 # ==========================================================
 # Settings
 # ==========================================================
 TOP_PERCENT = 5
-NEGATIVES_PER_SPINE = 1
+NEGATIVES_PER_SPINE = 5
+HARD_NEGATIVE_MIN_PROB = 0.1
 RANDOM_SEED = 42
 
 
@@ -87,16 +88,22 @@ def make_combined_gt(gt_paths, target_shape):
     return combined
 
 
-def make_random_negative_mask(gt_mask, forbidden_mask, rng):
+def make_hard_negative_mask(gt_mask, forbidden_mask, prob, rng, min_prob=0.1):
     """
-    Creates a random non-spine mask with the same number of voxels
-    as the corresponding GT spine mask.
+    Creates a hard negative mask with the same voxel count as the GT spine.
+    Hard negatives are sampled from non-GT regions where the model still predicts
+    relatively high spine probability.
     """
 
     n_voxels = int(gt_mask.sum())
 
-    allowed = ~forbidden_mask
+    allowed = (~forbidden_mask) & (prob >= min_prob)
     allowed_indices = np.flatnonzero(allowed.ravel())
+
+    # fallback if not enough high-probability negative voxels exist
+    if allowed_indices.size < n_voxels:
+        allowed = ~forbidden_mask
+        allowed_indices = np.flatnonzero(allowed.ravel())
 
     if allowed_indices.size < n_voxels:
         raise ValueError("Not enough non-spine voxels available.")
@@ -164,13 +171,15 @@ for model_name, prob_path in SPINE_PROBS.items():
         )
 
         # ==================================================
-        # Negative instance: random non-spine mask
+        # Hard negative instances
         # ==================================================
         for neg_id in range(NEGATIVES_PER_SPINE):
-            neg_mask = make_random_negative_mask(
+            neg_mask = make_hard_negative_mask(
                 gt_mask=gt,
                 forbidden_mask=combined_crop,
+                prob=prob_crop,
                 rng=rng,
+                min_prob=HARD_NEGATIVE_MIN_PROB,
             )
 
             neg_values = prob_crop[neg_mask]
@@ -178,9 +187,9 @@ for model_name, prob_path in SPINE_PROBS.items():
             rows.append(
                 {
                     "model": model_name,
-                    "instance_name": os.path.basename(gt_path) + f"_negative_{neg_id+1}",
+                    "instance_name": os.path.basename(gt_path) + f"_hard_negative_{neg_id+1}",
                     "label": 0,
-                    "instance_type": "random_non_spine",
+                    "instance_type": "hard_non_spine",
                     "voxels": int(neg_mask.sum()),
                     "mean_probability": float(neg_values.mean()) if neg_values.size else 0.0,
                     "max_probability": float(neg_values.max()) if neg_values.size else 0.0,
@@ -219,7 +228,7 @@ for model_name in df["model"].unique():
 
 plt.xlabel("Recall")
 plt.ylabel("Precision")
-plt.title("Instance-wise PR curve using original probabilities")
+plt.title("Instance-wise PR curve using hard negatives")
 plt.xlim(0, 1)
 plt.ylim(0, 1)
 plt.grid(True)
@@ -254,7 +263,7 @@ for model_name in df["model"].unique():
 
 plt.xlabel("False positive rate")
 plt.ylabel("True positive rate")
-plt.title("Instance-wise ROC curve using original probabilities")
+plt.title("Instance-wise ROC curve using hard negatives")
 plt.xlim(0, 1)
 plt.ylim(0, 1)
 plt.grid(True)
