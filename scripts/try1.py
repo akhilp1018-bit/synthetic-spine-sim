@@ -1,16 +1,31 @@
+"""
+Spine instance-level + dendrite voxel-level PR evaluation.
+
+Spine task (instance-level):
+  - GT identity = each per-spine mask file (one file = one spine)
+  - Continuous probability map is swept across thresholds
+  - At each threshold: CC on prediction (with size filter), then for each GT
+    spine find the best-overlapping predicted component; TP if IoU >= IOU_MATCH
+    and that predicted component is not already claimed.
+  - Satisfies Andreas's requirements:
+      one file per spine identity, continuous 0..1 predictions, threshold swept.
+
+Dendrite task (voxel-level):
+  - Single GT dendrite mask, continuous probability map.
+  - Standard voxel-level precision / recall at the same threshold grid as spine.
+  - Plus Dice and IoU for reference.
+
+Outputs:
+  spine_instance_pr_metrics.csv
+  dendrite_voxel_pr_metrics.csv
+"""
+
 import glob
-import os
+
 import numpy as np
 import pandas as pd
 import tifffile
-import matplotlib.pyplot as plt
-
-from sklearn.metrics import (
-    precision_recall_curve,
-    roc_curve,
-    auc,
-    average_precision_score,
-)
+from scipy.ndimage import label
 
 
 # ==========================================================
@@ -23,25 +38,35 @@ GT_SPINE_PATTERN = (
     + "/zstack_sample_001_labeled_membrane_bornwolf_fiji_xy200_z500_spacing200_spine[0-9]*_mask.tif"
 )
 
+GT_DENDRITE = (
+    BASE
+    + "/zstack_sample_001_labeled_membrane_bornwolf_fiji_xy200_z500_spacing200_dendrite_mask.tif"
+)
+
 SPINE_PROBS = {
-    "32F": BASE + "/deepd3_exports/32F_spine_probability.tif",
+    "32F":      BASE + "/deepd3_exports/32F_spine_probability.tif",
     "32F_94nm": BASE + "/deepd3_exports/32F_94nm_spine_probability.tif",
 }
 
-OUT_PER_SPINE_CSV = BASE + "/per_spine_raw_probability_summary.csv"
-OUT_VOXEL_CSV = BASE + "/voxelwise_raw_probability_summary.csv"
-OUT_PR = BASE + "/voxelwise_raw_probability_pr_curve.png"
-OUT_ROC = BASE + "/voxelwise_raw_probability_roc_curve.png"
+DENDRITE_PROBS = {
+    "32F":      BASE + "/deepd3_exports/32F_dendrite_probability.tif",
+    "32F_94nm": BASE + "/deepd3_exports/32F_94nm_dendrite_probability.tif",
+}
+
+OUT_SPINE_CSV    = BASE + "/spine_instance_pr_metrics.csv"
+OUT_DENDRITE_CSV = BASE + "/dendrite_voxel_pr_metrics.csv"
 
 
 # ==========================================================
 # Settings
 # ==========================================================
-TOP_PERCENT = 5
+THRESHOLDS      = np.linspace(0.01, 0.99, 50)
+IOU_THRESHOLD   = 0.1
+MIN_OBJECT_SIZE = 10     # drop tiny predicted blobs (noise) before counting
 
 
 # ==========================================================
-# Helper functions
+# Helpers
 # ==========================================================
 def load_mask(path):
     return tifffile.imread(path) > 0
@@ -49,10 +74,8 @@ def load_mask(path):
 
 def load_probability(path):
     arr = tifffile.imread(path).astype(np.float32)
-
     if arr.max() > 1.0:
         arr = arr / 65535.0
-
     return np.clip(arr, 0.0, 1.0)
 
 
@@ -60,188 +83,181 @@ def crop_to_common_shape(a, b):
     z = min(a.shape[0], b.shape[0])
     y = min(a.shape[1], b.shape[1])
     x = min(a.shape[2], b.shape[2])
-
     return a[:z, :y, :x], b[:z, :y, :x]
 
 
-def top_percent_mean(values, percent=5):
-    if values.size == 0:
-        return 0.0
-
-    k = max(1, int(np.ceil(values.size * percent / 100.0)))
-    top_values = np.partition(values, -k)[-k:]
-
-    return float(np.mean(top_values))
+def compute_iou(a, b):
+    inter = np.logical_and(a, b).sum()
+    union = np.logical_or(a, b).sum()
+    return inter / union if union > 0 else 0.0
 
 
-def make_combined_gt(gt_paths, target_shape):
-    combined = np.zeros(target_shape, dtype=bool)
-
-    for gt_path in gt_paths:
-        gt = load_mask(gt_path)
-        gt, combined_crop = crop_to_common_shape(gt, combined)
-
-        z, y, x = gt.shape
-        combined[:z, :y, :x] |= gt
-
-    return combined
+def filter_small_components(pred_labels, pred_count, min_size):
+    """Remove components smaller than min_size. Returns (new_label_image,
+    set_of_valid_ids, n_valid)."""
+    sizes = np.bincount(pred_labels.ravel())
+    valid_ids = set(int(i) for i in np.where(sizes >= min_size)[0] if i != 0)
+    if len(valid_ids) == pred_count:
+        return pred_labels, valid_ids, pred_count
+    # zero-out small components
+    keep_mask = np.isin(pred_labels, np.array(sorted(valid_ids), dtype=pred_labels.dtype))
+    cleaned = np.where(keep_mask, pred_labels, 0)
+    return cleaned, valid_ids, len(valid_ids)
 
 
 # ==========================================================
-# Load GT spine masks
+# Spine instance-level PR
 # ==========================================================
-gt_paths = sorted(glob.glob(GT_SPINE_PATTERN))
+def evaluate_spine_instances(gt_masks, pred_prob, threshold):
+    pred_mask = pred_prob >= threshold
+    pred_labels, pred_count = label(pred_mask)
 
-print("Found GT spine masks:", len(gt_paths))
-
-if len(gt_paths) == 0:
-    raise FileNotFoundError("No GT spine masks found.")
-
-
-# ==========================================================
-# 1) Per-spine raw probability summary
-# ==========================================================
-per_spine_rows = []
-
-for model_name, prob_path in SPINE_PROBS.items():
-    print("\nProcessing per-spine probabilities:", model_name)
-
-    prob = load_probability(prob_path)
-
-    for gt_path in gt_paths:
-        gt = load_mask(gt_path)
-        gt, prob_crop = crop_to_common_shape(gt, prob)
-
-        spine_values = prob_crop[gt]
-
-        per_spine_rows.append(
-            {
-                "model": model_name,
-                "gt_spine_file": os.path.basename(gt_path),
-                "spine_voxels": int(gt.sum()),
-                "mean_probability_inside_spine": float(spine_values.mean()) if spine_values.size else 0.0,
-                "max_probability_inside_spine": float(spine_values.max()) if spine_values.size else 0.0,
-                "top_5_percent_mean_probability": top_percent_mean(spine_values, percent=TOP_PERCENT),
-            }
-        )
-
-
-per_spine_df = pd.DataFrame(per_spine_rows)
-per_spine_df.to_csv(OUT_PER_SPINE_CSV, index=False)
-
-print("Saved:", OUT_PER_SPINE_CSV)
-
-
-# ==========================================================
-# 2) Voxel-wise PR / ROC using original probabilities
-# ==========================================================
-voxel_rows = []
-
-plt.figure(figsize=(6, 5))
-
-for model_name, prob_path in SPINE_PROBS.items():
-    print("\nProcessing voxel-wise PR/ROC:", model_name)
-
-    prob = load_probability(prob_path)
-
-    gt_combined = make_combined_gt(gt_paths, prob.shape)
-    gt_combined, prob = crop_to_common_shape(gt_combined, prob)
-
-    y_true = gt_combined.ravel().astype(np.uint8)
-    y_score = prob.ravel()
-
-    precision, recall, _ = precision_recall_curve(y_true, y_score)
-    ap = average_precision_score(y_true, y_score)
-
-    fpr, tpr, _ = roc_curve(y_true, y_score)
-    roc_auc = auc(fpr, tpr)
-
-    voxel_rows.append(
-        {
-            "model": model_name,
-            "GT_spine_files": len(gt_paths),
-            "total_voxels": int(y_true.size),
-            "GT_positive_voxels": int(y_true.sum()),
-            "GT_negative_voxels": int(y_true.size - y_true.sum()),
-            "average_precision": float(ap),
-            "roc_auc": float(roc_auc),
-            "prediction_min": float(prob.min()),
-            "prediction_max": float(prob.max()),
-            "prediction_mean": float(prob.mean()),
-        }
+    # Size filter — drop tiny noise components
+    pred_labels, valid_ids, n_valid = filter_small_components(
+        pred_labels, pred_count, MIN_OBJECT_SIZE
     )
 
-    plt.plot(
-        recall,
-        precision,
-        linewidth=2,
-        label=f"{model_name} AP={ap:.3f}",
-    )
+    matched_pred_ids = set()
+    matched_ious = []
+    tp = 0
+    fn = 0
 
+    for gt_path, gt in gt_masks:
+        gt_c, pred_c = crop_to_common_shape(gt, pred_labels)
 
-plt.xlabel("Recall")
-plt.ylabel("Precision")
-plt.title("Voxel-wise PR curve using original probabilities")
-plt.xlim(0, 1)
-plt.ylim(0, 1)
-plt.grid(True)
-plt.legend()
-plt.tight_layout()
-plt.savefig(OUT_PR, dpi=300)
-plt.close()
+        # only consider predicted components that actually touch this GT spine
+        overlapping_pred_ids = np.unique(pred_c[gt_c])
+        overlapping_pred_ids = [int(i) for i in overlapping_pred_ids
+                                if i != 0 and int(i) in valid_ids]
 
-print("Saved:", OUT_PR)
+        best_iou = 0.0
+        best_pred_id = None
+        for pid in overlapping_pred_ids:
+            pred_obj = pred_c == pid
+            iou = compute_iou(gt_c, pred_obj)
+            if iou > best_iou:
+                best_iou = iou
+                best_pred_id = pid
 
+        if (best_iou >= IOU_THRESHOLD
+                and best_pred_id is not None
+                and best_pred_id not in matched_pred_ids):
+            tp += 1
+            matched_pred_ids.add(best_pred_id)
+            matched_ious.append(best_iou)
+        else:
+            fn += 1
 
-# ==========================================================
-# ROC curve
-# ==========================================================
-plt.figure(figsize=(6, 5))
+    # FP = valid predicted components that never got matched
+    fp = n_valid - len(matched_pred_ids)
 
-for model_name, prob_path in SPINE_PROBS.items():
-    prob = load_probability(prob_path)
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 1.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1        = 2 * precision * recall / (precision + recall) \
+                if (precision + recall) > 0 else 0.0
 
-    gt_combined = make_combined_gt(gt_paths, prob.shape)
-    gt_combined, prob = crop_to_common_shape(gt_combined, prob)
-
-    y_true = gt_combined.ravel().astype(np.uint8)
-    y_score = prob.ravel()
-
-    fpr, tpr, _ = roc_curve(y_true, y_score)
-    roc_auc = auc(fpr, tpr)
-
-    plt.plot(
-        fpr,
-        tpr,
-        linewidth=2,
-        label=f"{model_name} AUC={roc_auc:.3f}",
-    )
-
-
-plt.xlabel("False positive rate")
-plt.ylabel("True positive rate")
-plt.title("Voxel-wise ROC curve using original probabilities")
-plt.xlim(0, 1)
-plt.ylim(0, 1)
-plt.grid(True)
-plt.legend()
-plt.tight_layout()
-plt.savefig(OUT_ROC, dpi=300)
-plt.close()
-
-print("Saved:", OUT_ROC)
+    return {
+        "threshold":         float(threshold),
+        "GT_spines":         len(gt_masks),
+        "Predicted_objects": int(n_valid),
+        "TP":                int(tp),
+        "FP":                int(fp),
+        "FN":                int(fn),
+        "Precision":         float(precision),
+        "Recall":            float(recall),
+        "F1":                float(f1),
+        "Mean_IoU":          float(np.mean(matched_ious)) if matched_ious else 0.0,
+        "Median_IoU":        float(np.median(matched_ious)) if matched_ious else 0.0,
+    }
 
 
 # ==========================================================
-# Save voxel summary
+# Dendrite voxel-level PR
 # ==========================================================
-voxel_df = pd.DataFrame(voxel_rows)
-voxel_df.to_csv(OUT_VOXEL_CSV, index=False)
+def evaluate_dendrite_voxels(gt, pred_prob, threshold):
+    gt_c, pred_prob_c = crop_to_common_shape(gt, pred_prob)
+    pred = pred_prob_c >= threshold
 
-print("Saved:", OUT_VOXEL_CSV)
+    tp = int(np.logical_and(gt_c,  pred).sum())
+    fp = int(np.logical_and(~gt_c, pred).sum())
+    fn = int(np.logical_and(gt_c,  ~pred).sum())
 
-print("\nPer-spine probability summary:")
-print(per_spine_df)
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 1.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1        = 2 * precision * recall / (precision + recall) \
+                if (precision + recall) > 0 else 0.0
+    dice      = (2 * tp) / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
+    iou       = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
 
-print("\nVoxel-wise probability summary:")
-print(voxel_df)
+    return {
+        "threshold":   float(threshold),
+        "TP":          tp,
+        "FP":          fp,
+        "FN":          fn,
+        "Precision":   float(precision),
+        "Recall":      float(recall),
+        "F1":          float(f1),
+        "Dice":        float(dice),
+        "IoU":         float(iou),
+        "GT_voxels":   int(gt_c.sum()),
+        "Pred_voxels": int(pred.sum()),
+    }
+
+
+# ==========================================================
+# Main
+# ==========================================================
+def main():
+    # ---- Spine GT ----
+    gt_spine_paths = sorted(glob.glob(GT_SPINE_PATTERN))
+    print("Found GT spine instances:", len(gt_spine_paths))
+    if not gt_spine_paths:
+        raise FileNotFoundError("No per-spine GT masks found.")
+
+    gt_spine_masks = [(p, load_mask(p)) for p in gt_spine_paths]
+
+    spine_rows = []
+    for model_name, pred_path in SPINE_PROBS.items():
+        print(f"\nSpine evaluation: {model_name}")
+        pred_prob = load_probability(pred_path)
+        for thr in THRESHOLDS:
+            r = evaluate_spine_instances(gt_spine_masks, pred_prob, thr)
+            r["Model"] = model_name
+            spine_rows.append(r)
+            print(f"  thr={thr:.2f}  pred={r['Predicted_objects']:4d}  "
+                  f"TP={r['TP']:3d} FP={r['FP']:4d} FN={r['FN']:3d}  "
+                  f"P={r['Precision']:.3f} R={r['Recall']:.3f} F1={r['F1']:.3f}")
+
+    spine_df = pd.DataFrame(spine_rows)
+    spine_df.to_csv(OUT_SPINE_CSV, index=False)
+    print("Saved:", OUT_SPINE_CSV)
+
+    # ---- Dendrite GT ----
+    gt_dendrite = load_mask(GT_DENDRITE)
+    dendrite_rows = []
+    for model_name, pred_path in DENDRITE_PROBS.items():
+        print(f"\nDendrite evaluation: {model_name}")
+        pred_prob = load_probability(pred_path)
+        for thr in THRESHOLDS:
+            r = evaluate_dendrite_voxels(gt_dendrite, pred_prob, thr)
+            r["Model"] = model_name
+            dendrite_rows.append(r)
+
+    dendrite_df = pd.DataFrame(dendrite_rows)
+    dendrite_df.to_csv(OUT_DENDRITE_CSV, index=False)
+    print("Saved:", OUT_DENDRITE_CSV)
+
+    # ---- Best F1 rows ----
+    print("\nBest spine F1:")
+    print(spine_df.loc[spine_df.groupby("Model")["F1"].idxmax()]
+          [["Model", "threshold", "Precision", "Recall", "F1",
+            "TP", "FP", "FN"]].to_string(index=False))
+
+    print("\nBest dendrite F1:")
+    print(dendrite_df.loc[dendrite_df.groupby("Model")["F1"].idxmax()]
+          [["Model", "threshold", "Precision", "Recall", "F1",
+            "Dice", "IoU"]].to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,9 +1,5 @@
-
-
 import glob
 import os
-import time
-
 import numpy as np
 import pandas as pd
 import tifffile
@@ -28,134 +24,224 @@ GT_SPINE_PATTERN = (
 )
 
 SPINE_PROBS = {
-    "32F":      BASE + "/deepd3_exports/32F_spine_probability.tif",
+    "32F": BASE + "/deepd3_exports/32F_spine_probability.tif",
     "32F_94nm": BASE + "/deepd3_exports/32F_94nm_spine_probability.tif",
 }
 
-OUT_PR      = BASE + "/voxelwise_PR.png"
-OUT_ROC     = BASE + "/voxelwise_ROC.png"
-OUT_SUMMARY = BASE + "/voxelwise_summary.csv"
+OUT_PER_SPINE_CSV = BASE + "/per_spine_raw_probability_summary.csv"
+OUT_VOXEL_CSV = BASE + "/voxelwise_raw_probability_summary.csv"
+OUT_PR = BASE + "/voxelwise_raw_probability_pr_curve.png"
+OUT_ROC = BASE + "/voxelwise_raw_probability_roc_curve.png"
 
 
 # ==========================================================
-# Helpers
+# Settings
+# ==========================================================
+TOP_PERCENT = 5
+
+
+# ==========================================================
+# Helper functions
 # ==========================================================
 def load_mask(path):
     return tifffile.imread(path) > 0
 
 
-def load_prob(path):
-    a = tifffile.imread(path).astype(np.float32)
-    if a.max() > 1.0:
-        a = a / 65535.0
-    return np.clip(a, 0.0, 1.0)
+def load_probability(path):
+    arr = tifffile.imread(path).astype(np.float32)
+
+    if arr.max() > 1.0:
+        arr = arr / 65535.0
+
+    return np.clip(arr, 0.0, 1.0)
 
 
-def crop_to(mask, shape):
-    """Crop or pad a boolean mask to a target shape, top-left aligned."""
-    out = np.zeros(shape, dtype=bool)
-    z = min(mask.shape[0], shape[0])
-    y = min(mask.shape[1], shape[1])
-    x = min(mask.shape[2], shape[2])
-    out[:z, :y, :x] = mask[:z, :y, :x]
-    return out
+def crop_to_common_shape(a, b):
+    z = min(a.shape[0], b.shape[0])
+    y = min(a.shape[1], b.shape[1])
+    x = min(a.shape[2], b.shape[2])
+
+    return a[:z, :y, :x], b[:z, :y, :x]
+
+
+def top_percent_mean(values, percent=5):
+    if values.size == 0:
+        return 0.0
+
+    k = max(1, int(np.ceil(values.size * percent / 100.0)))
+    top_values = np.partition(values, -k)[-k:]
+
+    return float(np.mean(top_values))
+
+
+def make_combined_gt(gt_paths, target_shape):
+    combined = np.zeros(target_shape, dtype=bool)
+
+    for gt_path in gt_paths:
+        gt = load_mask(gt_path)
+        gt, combined_crop = crop_to_common_shape(gt, combined)
+
+        z, y, x = gt.shape
+        combined[:z, :y, :x] |= gt
+
+    return combined
 
 
 # ==========================================================
-# Load GT spines and build a union mask per shape
+# Load GT spine masks
 # ==========================================================
 gt_paths = sorted(glob.glob(GT_SPINE_PATTERN))
-if not gt_paths:
-    raise FileNotFoundError(f"No GT spine masks matched: {GT_SPINE_PATTERN}")
-print(f"Loaded {len(gt_paths)} GT spine instances")
 
-gt_union_cache = {}
+print("Found GT spine masks:", len(gt_paths))
 
-def get_gt_union(shape):
-    if shape in gt_union_cache:
-        return gt_union_cache[shape]
-    u = np.zeros(shape, dtype=bool)
-    for p in gt_paths:
-        u |= crop_to(load_mask(p), shape)
-    gt_union_cache[shape] = u
-    return u
+if len(gt_paths) == 0:
+    raise FileNotFoundError("No GT spine masks found.")
 
 
 # ==========================================================
-# Evaluate each model
+# 1) Per-spine raw probability summary
 # ==========================================================
-fig_pr,  ax_pr  = plt.subplots(figsize=(6, 5))
-fig_roc, ax_roc = plt.subplots(figsize=(6, 5))
+per_spine_rows = []
 
-summary_rows = []
+for model_name, prob_path in SPINE_PROBS.items():
+    print("\nProcessing per-spine probabilities:", model_name)
 
-for model, ppath in SPINE_PROBS.items():
-    t0 = time.time()
-    print(f"\nModel: {model}")
-    prob = load_prob(ppath)
-    gt_u = get_gt_union(prob.shape)
+    prob = load_probability(prob_path)
 
-    y_true  = gt_u.ravel().astype(np.uint8)
+    for gt_path in gt_paths:
+        gt = load_mask(gt_path)
+        gt, prob_crop = crop_to_common_shape(gt, prob)
+
+        spine_values = prob_crop[gt]
+
+        per_spine_rows.append(
+            {
+                "model": model_name,
+                "gt_spine_file": os.path.basename(gt_path),
+                "spine_voxels": int(gt.sum()),
+                "mean_probability_inside_spine": float(spine_values.mean()) if spine_values.size else 0.0,
+                "max_probability_inside_spine": float(spine_values.max()) if spine_values.size else 0.0,
+                "top_5_percent_mean_probability": top_percent_mean(spine_values, percent=TOP_PERCENT),
+            }
+        )
+
+
+per_spine_df = pd.DataFrame(per_spine_rows)
+per_spine_df.to_csv(OUT_PER_SPINE_CSV, index=False)
+
+print("Saved:", OUT_PER_SPINE_CSV)
+
+
+# ==========================================================
+# 2) Voxel-wise PR / ROC using original probabilities
+# ==========================================================
+voxel_rows = []
+
+plt.figure(figsize=(6, 5))
+
+for model_name, prob_path in SPINE_PROBS.items():
+    print("\nProcessing voxel-wise PR/ROC:", model_name)
+
+    prob = load_probability(prob_path)
+
+    gt_combined = make_combined_gt(gt_paths, prob.shape)
+    gt_combined, prob = crop_to_common_shape(gt_combined, prob)
+
+    y_true = gt_combined.ravel().astype(np.uint8)
     y_score = prob.ravel()
 
-    # PR
-    p, r, _ = precision_recall_curve(y_true, y_score)
-    ap      = average_precision_score(y_true, y_score)
+    precision, recall, _ = precision_recall_curve(y_true, y_score)
+    ap = average_precision_score(y_true, y_score)
 
-    # ROC
     fpr, tpr, _ = roc_curve(y_true, y_score)
-    roc_auc     = auc(fpr, tpr)
+    roc_auc = auc(fpr, tpr)
 
-    # F1 along the PR curve (sklearn returns one extra precision/recall point;
-    # drop the trailing dummy point for fair zipping)
-    p_, r_ = p[:-1], r[:-1]
-    f1 = 2 * p_ * r_ / (p_ + r_ + 1e-12)
-    best_idx = int(np.argmax(f1))
-    best_f1  = float(f1[best_idx])
-    best_p   = float(p_[best_idx])
-    best_r   = float(r_[best_idx])
+    voxel_rows.append(
+        {
+            "model": model_name,
+            "GT_spine_files": len(gt_paths),
+            "total_voxels": int(y_true.size),
+            "GT_positive_voxels": int(y_true.sum()),
+            "GT_negative_voxels": int(y_true.size - y_true.sum()),
+            "average_precision": float(ap),
+            "roc_auc": float(roc_auc),
+            "prediction_min": float(prob.min()),
+            "prediction_max": float(prob.max()),
+            "prediction_mean": float(prob.mean()),
+        }
+    )
 
-    ax_pr.plot(r,   p,   lw=2, label=f"{model}  AP={ap:.3f}")
-    ax_roc.plot(fpr, tpr, lw=2, label=f"{model}  AUC={roc_auc:.3f}")
+    plt.plot(
+        recall,
+        precision,
+        linewidth=2,
+        label=f"{model_name} AP={ap:.3f}",
+    )
 
-    summary_rows.append({
-        "model":                 model,
-        "voxel_AP":              round(ap, 4),
-        "voxel_AUROC":           round(roc_auc, 4),
-        "best_F1":               round(best_f1, 4),
-        "best_F1_precision":     round(best_p, 4),
-        "best_F1_recall":        round(best_r, 4),
-        "n_positive_voxels":     int(y_true.sum()),
-        "n_total_voxels":        int(y_true.size),
-        "positive_fraction":     round(float(y_true.mean()), 6),
-    })
-    print(f"  AP={ap:.3f}  AUROC={roc_auc:.3f}  best F1={best_f1:.3f} "
-          f"(P={best_p:.3f}, R={best_r:.3f})   ({time.time()-t0:.1f}s)")
 
-# ==========================================================
-# Save plots
-# ==========================================================
-ax_pr.set(xlabel="Recall", ylabel="Precision",
-          xlim=(0, 1), ylim=(0, 1),
-          title="Voxel-wise PR (continuous probability)")
-ax_pr.grid(True); ax_pr.legend()
-fig_pr.tight_layout(); fig_pr.savefig(OUT_PR, dpi=300); plt.close(fig_pr)
+plt.xlabel("Recall")
+plt.ylabel("Precision")
+plt.title("Voxel-wise PR curve using original probabilities")
+plt.xlim(0, 1)
+plt.ylim(0, 1)
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.savefig(OUT_PR, dpi=300)
+plt.close()
 
-ax_roc.set(xlabel="False positive rate", ylabel="True positive rate",
-           xlim=(0, 1), ylim=(0, 1),
-           title="Voxel-wise ROC (continuous probability)")
-ax_roc.grid(True); ax_roc.legend()
-fig_roc.tight_layout(); fig_roc.savefig(OUT_ROC, dpi=300); plt.close(fig_roc)
+print("Saved:", OUT_PR)
+
 
 # ==========================================================
-# Save summary table
+# ROC curve
 # ==========================================================
-summary_df = pd.DataFrame(summary_rows)
-summary_df.to_csv(OUT_SUMMARY, index=False)
+plt.figure(figsize=(6, 5))
 
-print("\nVoxel-wise summary:")
-print(summary_df.to_string(index=False))
+for model_name, prob_path in SPINE_PROBS.items():
+    prob = load_probability(prob_path)
 
-print(f"\nSaved: {OUT_PR}")
-print(f"Saved: {OUT_ROC}")
-print(f"Saved: {OUT_SUMMARY}")
+    gt_combined = make_combined_gt(gt_paths, prob.shape)
+    gt_combined, prob = crop_to_common_shape(gt_combined, prob)
+
+    y_true = gt_combined.ravel().astype(np.uint8)
+    y_score = prob.ravel()
+
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+    roc_auc = auc(fpr, tpr)
+
+    plt.plot(
+        fpr,
+        tpr,
+        linewidth=2,
+        label=f"{model_name} AUC={roc_auc:.3f}",
+    )
+
+
+plt.xlabel("False positive rate")
+plt.ylabel("True positive rate")
+plt.title("Voxel-wise ROC curve using original probabilities")
+plt.xlim(0, 1)
+plt.ylim(0, 1)
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.savefig(OUT_ROC, dpi=300)
+plt.close()
+
+print("Saved:", OUT_ROC)
+
+
+# ==========================================================
+# Save voxel summary
+# ==========================================================
+voxel_df = pd.DataFrame(voxel_rows)
+voxel_df.to_csv(OUT_VOXEL_CSV, index=False)
+
+print("Saved:", OUT_VOXEL_CSV)
+
+print("\nPer-spine probability summary:")
+print(per_spine_df)
+
+print("\nVoxel-wise probability summary:")
+print(voxel_df)
