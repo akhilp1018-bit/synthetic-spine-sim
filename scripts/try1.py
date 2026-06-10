@@ -5,8 +5,12 @@ import pandas as pd
 import tifffile
 import matplotlib.pyplot as plt
 
-from scipy.ndimage import label, find_objects
-from sklearn.metrics import auc
+from sklearn.metrics import (
+    precision_recall_curve,
+    roc_curve,
+    auc,
+    average_precision_score,
+)
 
 
 # ==========================================================
@@ -24,17 +28,16 @@ SPINE_PROBS = {
     "32F_94nm": BASE + "/deepd3_exports/32F_94nm_spine_probability.tif",
 }
 
-OUT_CSV = BASE + "/objectwise_threshold_sweep_bbox_metrics.csv"
-OUT_PR = BASE + "/objectwise_threshold_sweep_bbox_pr_curve.png"
-OUT_METRICS = BASE + "/objectwise_threshold_sweep_bbox_metrics_vs_threshold.png"
+OUT_PER_SPINE_CSV = BASE + "/per_spine_raw_probability_summary.csv"
+OUT_VOXEL_CSV = BASE + "/voxelwise_raw_probability_summary.csv"
+OUT_PR = BASE + "/voxelwise_raw_probability_pr_curve.png"
+OUT_ROC = BASE + "/voxelwise_raw_probability_roc_curve.png"
 
 
 # ==========================================================
 # Settings
 # ==========================================================
-THRESHOLDS = np.arange(0.05, 1.00, 0.05)
-MIN_OBJECT_SIZE = 10
-IOU_THRESHOLD = 0.1
+TOP_PERCENT = 5
 
 
 # ==========================================================
@@ -57,249 +60,128 @@ def crop_to_common_shape(a, b):
     z = min(a.shape[0], b.shape[0])
     y = min(a.shape[1], b.shape[1])
     x = min(a.shape[2], b.shape[2])
+
     return a[:z, :y, :x], b[:z, :y, :x]
 
 
-def bbox_intersection_slices(s1, s2):
-    slices = []
-
-    for a, b in zip(s1, s2):
-        start = max(a.start, b.start)
-        stop = min(a.stop, b.stop)
-
-        if start >= stop:
-            return None
-
-        slices.append(slice(start, stop))
-
-    return tuple(slices)
-
-
-def crop_slice(global_slice, bbox):
-    return tuple(
-        slice(global_slice[i].start - bbox[i].start,
-              global_slice[i].stop - bbox[i].start)
-        for i in range(3)
-    )
-
-
-def bbox_iou(obj_mask, obj_bbox, obj_size, gt_mask, gt_bbox, gt_size):
-    overlap = bbox_intersection_slices(obj_bbox, gt_bbox)
-
-    if overlap is None:
+def top_percent_mean(values, percent=5):
+    if values.size == 0:
         return 0.0
 
-    obj_local = crop_slice(overlap, obj_bbox)
-    gt_local = crop_slice(overlap, gt_bbox)
+    k = max(1, int(np.ceil(values.size * percent / 100.0)))
+    top_values = np.partition(values, -k)[-k:]
 
-    inter = np.logical_and(
-        obj_mask[obj_local],
-        gt_mask[gt_local]
-    ).sum()
-
-    union = obj_size + gt_size - inter
-
-    if union == 0:
-        return 0.0
-
-    return float(inter / union)
+    return float(np.mean(top_values))
 
 
-def make_upper_envelope(recall, precision):
-    """
-    Makes PR curve monotonic for cleaner AP calculation.
-    """
-    recall = np.asarray(recall)
-    precision = np.asarray(precision)
+def make_combined_gt(gt_paths, target_shape):
+    combined = np.zeros(target_shape, dtype=bool)
 
-    order = np.argsort(recall)
-    recall = recall[order]
-    precision = precision[order]
+    for gt_path in gt_paths:
+        gt = load_mask(gt_path)
+        gt, combined_crop = crop_to_common_shape(gt, combined)
 
-    unique_recall = []
-    max_precision = []
+        z, y, x = gt.shape
+        combined[:z, :y, :x] |= gt
 
-    for r in np.unique(recall):
-        p = precision[recall == r].max()
-        unique_recall.append(r)
-        max_precision.append(p)
-
-    unique_recall = np.array(unique_recall)
-    max_precision = np.array(max_precision)
-
-    # precision envelope from right to left
-    for i in range(len(max_precision) - 2, -1, -1):
-        max_precision[i] = max(max_precision[i], max_precision[i + 1])
-
-    return unique_recall, max_precision
+    return combined
 
 
 # ==========================================================
 # Load GT spine masks
 # ==========================================================
 gt_paths = sorted(glob.glob(GT_SPINE_PATTERN))
+
 print("Found GT spine masks:", len(gt_paths))
 
 if len(gt_paths) == 0:
     raise FileNotFoundError("No GT spine masks found.")
 
-gt_items = []
-
-for gt_path in gt_paths:
-    gt_mask = load_mask(gt_path)
-    gt_bbox = find_objects(gt_mask.astype(np.uint8))[0]
-    gt_size = int(gt_mask.sum())
-
-    gt_items.append(
-        {
-            "name": os.path.basename(gt_path),
-            "mask": gt_mask,
-            "bbox": gt_bbox,
-            "size": gt_size,
-        }
-    )
-
 
 # ==========================================================
-# Threshold sweep evaluation
+# 1) Per-spine raw probability summary
 # ==========================================================
-rows = []
+per_spine_rows = []
 
 for model_name, prob_path in SPINE_PROBS.items():
-    print("\nProcessing:", model_name)
+    print("\nProcessing per-spine probabilities:", model_name)
 
     prob = load_probability(prob_path)
 
-    # crop GTs to probability size if needed
-    cropped_gt_items = []
+    for gt_path in gt_paths:
+        gt = load_mask(gt_path)
+        gt, prob_crop = crop_to_common_shape(gt, prob)
 
-    for gt in gt_items:
-        gt_mask, prob_crop = crop_to_common_shape(gt["mask"], prob)
-        gt_bbox = find_objects(gt_mask.astype(np.uint8))[0]
-        gt_size = int(gt_mask.sum())
+        spine_values = prob_crop[gt]
 
-        cropped_gt_items.append(
-            {
-                "name": gt["name"],
-                "mask": gt_mask,
-                "bbox": gt_bbox,
-                "size": gt_size,
-            }
-        )
-
-    for thr in THRESHOLDS:
-        pred_binary = prob >= thr
-        pred_labels, pred_count = label(pred_binary)
-        object_slices = find_objects(pred_labels)
-
-        matched_gt = set()
-
-        tp = 0
-        fp = 0
-        kept_objects = 0
-
-        for obj_id, obj_bbox in enumerate(object_slices, start=1):
-            if obj_bbox is None:
-                continue
-
-            obj_mask = pred_labels[obj_bbox] == obj_id
-            obj_size = int(obj_mask.sum())
-
-            if obj_size < MIN_OBJECT_SIZE:
-                continue
-
-            kept_objects += 1
-
-            best_iou = 0.0
-            best_gt_name = None
-
-            for gt in cropped_gt_items:
-                iou = bbox_iou(
-                    obj_mask=obj_mask,
-                    obj_bbox=obj_bbox,
-                    obj_size=obj_size,
-                    gt_mask=gt["mask"],
-                    gt_bbox=gt["bbox"],
-                    gt_size=gt["size"],
-                )
-
-                if iou > best_iou:
-                    best_iou = iou
-                    best_gt_name = gt["name"]
-
-            if best_iou >= IOU_THRESHOLD and best_gt_name not in matched_gt:
-                tp += 1
-                matched_gt.add(best_gt_name)
-            else:
-                fp += 1
-
-        fn = len(cropped_gt_items) - len(matched_gt)
-
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 1.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = (
-            2 * precision * recall / (precision + recall)
-            if (precision + recall) > 0
-            else 0.0
-        )
-
-        rows.append(
+        per_spine_rows.append(
             {
                 "model": model_name,
-                "threshold": float(thr),
-                "GT_spines": len(cropped_gt_items),
-                "predicted_objects": kept_objects,
-                "TP": tp,
-                "FP": fp,
-                "FN": fn,
-                "precision": precision,
-                "recall": recall,
-                "f1": f1,
-                "iou_threshold": IOU_THRESHOLD,
-                "min_object_size": MIN_OBJECT_SIZE,
+                "gt_spine_file": os.path.basename(gt_path),
+                "spine_voxels": int(gt.sum()),
+                "mean_probability_inside_spine": float(spine_values.mean()) if spine_values.size else 0.0,
+                "max_probability_inside_spine": float(spine_values.max()) if spine_values.size else 0.0,
+                "top_5_percent_mean_probability": top_percent_mean(spine_values, percent=TOP_PERCENT),
             }
         )
 
-        print(
-            f"{model_name} | thr={thr:.2f} | "
-            f"objects={kept_objects} | TP={tp} FP={fp} FN={fn} | "
-            f"P={precision:.3f} R={recall:.3f} F1={f1:.3f}"
-        )
 
+per_spine_df = pd.DataFrame(per_spine_rows)
+per_spine_df.to_csv(OUT_PER_SPINE_CSV, index=False)
 
-df = pd.DataFrame(rows)
-df.to_csv(OUT_CSV, index=False)
-
-print("\nSaved:", OUT_CSV)
+print("Saved:", OUT_PER_SPINE_CSV)
 
 
 # ==========================================================
-# PR curve with upper envelope
+# 2) Voxel-wise PR / ROC using original probabilities
 # ==========================================================
+voxel_rows = []
+
 plt.figure(figsize=(6, 5))
 
-for model_name in df["model"].unique():
-    d = df[df["model"] == model_name].copy()
+for model_name, prob_path in SPINE_PROBS.items():
+    print("\nProcessing voxel-wise PR/ROC:", model_name)
 
-    recall_env, precision_env = make_upper_envelope(
-        d["recall"].values,
-        d["precision"].values,
+    prob = load_probability(prob_path)
+
+    gt_combined = make_combined_gt(gt_paths, prob.shape)
+    gt_combined, prob = crop_to_common_shape(gt_combined, prob)
+
+    y_true = gt_combined.ravel().astype(np.uint8)
+    y_score = prob.ravel()
+
+    precision, recall, _ = precision_recall_curve(y_true, y_score)
+    ap = average_precision_score(y_true, y_score)
+
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+    roc_auc = auc(fpr, tpr)
+
+    voxel_rows.append(
+        {
+            "model": model_name,
+            "GT_spine_files": len(gt_paths),
+            "total_voxels": int(y_true.size),
+            "GT_positive_voxels": int(y_true.sum()),
+            "GT_negative_voxels": int(y_true.size - y_true.sum()),
+            "average_precision": float(ap),
+            "roc_auc": float(roc_auc),
+            "prediction_min": float(prob.min()),
+            "prediction_max": float(prob.max()),
+            "prediction_mean": float(prob.mean()),
+        }
     )
-
-    pr_auc = auc(recall_env, precision_env)
 
     plt.plot(
-        recall_env,
-        precision_env,
-        marker="o",
+        recall,
+        precision,
         linewidth=2,
-        markersize=4,
-        label=f"{model_name} AP≈{pr_auc:.3f}",
+        label=f"{model_name} AP={ap:.3f}",
     )
+
 
 plt.xlabel("Recall")
 plt.ylabel("Precision")
-plt.title(f"Object-wise PR curve, IoU ≥ {IOU_THRESHOLD}")
+plt.title("Voxel-wise PR curve using original probabilities")
 plt.xlim(0, 1)
 plt.ylim(0, 1)
 plt.grid(True)
@@ -312,47 +194,54 @@ print("Saved:", OUT_PR)
 
 
 # ==========================================================
-# Precision / Recall / F1 vs threshold
+# ROC curve
 # ==========================================================
-plt.figure(figsize=(7, 5))
+plt.figure(figsize=(6, 5))
 
-for model_name in df["model"].unique():
-    d = df[df["model"] == model_name].copy()
-    d = d.sort_values("threshold")
+for model_name, prob_path in SPINE_PROBS.items():
+    prob = load_probability(prob_path)
 
-    plt.plot(
-        d["threshold"],
-        d["precision"],
-        marker="o",
-        linewidth=2,
-        label=f"{model_name} precision",
-    )
+    gt_combined = make_combined_gt(gt_paths, prob.shape)
+    gt_combined, prob = crop_to_common_shape(gt_combined, prob)
 
-    plt.plot(
-        d["threshold"],
-        d["recall"],
-        marker="s",
-        linewidth=2,
-        label=f"{model_name} recall",
-    )
+    y_true = gt_combined.ravel().astype(np.uint8)
+    y_score = prob.ravel()
+
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+    roc_auc = auc(fpr, tpr)
 
     plt.plot(
-        d["threshold"],
-        d["f1"],
-        marker="^",
+        fpr,
+        tpr,
         linewidth=2,
-        label=f"{model_name} F1",
+        label=f"{model_name} AUC={roc_auc:.3f}",
     )
 
-plt.xlabel("Probability threshold")
-plt.ylabel("Metric value")
-plt.title(f"Object-wise metrics vs threshold, IoU ≥ {IOU_THRESHOLD}")
+
+plt.xlabel("False positive rate")
+plt.ylabel("True positive rate")
+plt.title("Voxel-wise ROC curve using original probabilities")
 plt.xlim(0, 1)
 plt.ylim(0, 1)
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
-plt.savefig(OUT_METRICS, dpi=300)
+plt.savefig(OUT_ROC, dpi=300)
 plt.close()
 
-print("Saved:", OUT_METRICS)
+print("Saved:", OUT_ROC)
+
+
+# ==========================================================
+# Save voxel summary
+# ==========================================================
+voxel_df = pd.DataFrame(voxel_rows)
+voxel_df.to_csv(OUT_VOXEL_CSV, index=False)
+
+print("Saved:", OUT_VOXEL_CSV)
+
+print("\nPer-spine probability summary:")
+print(per_spine_df)
+
+print("\nVoxel-wise probability summary:")
+print(voxel_df)
