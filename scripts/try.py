@@ -1,17 +1,4 @@
-"""
-Part A — Voxel-wise PR / ROC on continuous (0..1) spine probabilities.
 
-What this does:
-- Loads each individual GT spine mask file and unions them into a single
-  binary ground-truth volume (spine vs. not-spine, per voxel).
-- Loads each model's spine probability map as a continuous 0..1 volume.
-- Uses the raw probability map directly as the per-voxel score (no thresholding).
-- Computes PR curve + Average Precision, and ROC curve + AUROC.
-- Saves PR plot, ROC plot, and a summary CSV.
-
-This directly answers Andreas's request to use the original 0..1 predictions
-for PR / ROC curves, without any pre-thresholding.
-"""
 
 import glob
 import os

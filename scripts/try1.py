@@ -1,29 +1,22 @@
 """
-Part B — Instance-wise PR / ROC by threshold sweep on continuous probabilities.
+Part B — Instance-wise PR by threshold sweep on continuous probabilities.
 
-What this does:
-- Loads each individual GT spine mask file as its own instance identity
-  (one file = one spine). No connected components are run on the GT.
-- For each model probability map, sweeps thresholds over [0.05 .. 0.95].
-- At each threshold:
-    * Binarize the probability map and run connected components on the prediction
-      (filtering small components by MIN_OBJECT_SIZE).
-    * Match each predicted component to the GT spine file with the highest IoU.
-    * Greedy one-to-one assignment (each GT spine can be matched at most once),
-      requiring IoU >= IOU_MATCH for a true positive.
-    * Count TP / FP / FN against the individual GT files.
-- Bounding boxes are used to make IoU computation fast — mathematically
-  identical to full-volume IoU.
+Identities come from the individual GT spine files (one file = one spine),
+NOT from connected components on the GT.
+
+Sweeps thresholds over the continuous probability map. At each threshold:
+  * Binarize and run CC on the prediction (filter by MIN_OBJECT_SIZE).
+  * Match each predicted component to the GT spine file with the highest IoU
+    (greedy one-to-one assignment, IoU >= IOU_MATCH required).
+  * Count TP / FP / FN against the per-file GT identities.
+
+Bounding boxes accelerate IoU — mathematically identical to full-volume IoU.
 
 Outputs:
-- instancewise_PR_sweep.png       PR curve, points colored by threshold
-- instancewise_ROC_sweep.png      ROC-style curve (FPR-proxy vs recall)
-- instancewise_sweep.csv          Per-threshold TP/FP/FN/precision/recall/F1
-- instancewise_summary.csv        One row per model: best operating point + AP
-
-Addresses both of Andreas's comments:
-  1) instance identity comes from per-spine GT files (not CC)
-  2) probabilities are used in continuous form (0..1), threshold is swept
+  instancewise_sweep.csv                  per-threshold metrics
+  instancewise_summary.csv                one row per model: best operating point
+  instancewise_PR_sweep.png               PR with upper-envelope + best-F1 star
+  instancewise_metrics_vs_threshold.png   precision / recall / F1 vs threshold
 """
 
 import glob
@@ -53,10 +46,10 @@ SPINE_PROBS = {
     "32F_94nm": BASE + "/deepd3_exports/32F_94nm_spine_probability.tif",
 }
 
-OUT_SWEEP_CSV    = BASE + "/instancewise_sweep.csv"
-OUT_SUMMARY_CSV  = BASE + "/instancewise_summary.csv"
-OUT_PR_PNG       = BASE + "/instancewise_PR_sweep.png"
-OUT_ROC_PNG      = BASE + "/instancewise_ROC_sweep.png"
+OUT_SWEEP_CSV   = BASE + "/instancewise_sweep.csv"
+OUT_SUMMARY_CSV = BASE + "/instancewise_summary.csv"
+OUT_PR_PNG      = BASE + "/instancewise_PR_sweep.png"
+OUT_VS_T_PNG    = BASE + "/instancewise_metrics_vs_threshold.png"
 
 
 # ==========================================================
@@ -98,7 +91,6 @@ def bbox_overlap(a, b):
 
 
 def iou_in_union_bbox(a_bbox, a_local, a_sum, b_bbox, b_local, b_sum):
-    """Compute IoU using only the union of the two bounding boxes."""
     ub = tuple(
         slice(min(a_bbox[d].start, b_bbox[d].start),
               max(a_bbox[d].stop,  b_bbox[d].stop))
@@ -120,8 +112,18 @@ def iou_in_union_bbox(a_bbox, a_local, a_sum, b_bbox, b_local, b_sum):
     return inter / union
 
 
+def upper_envelope(recall, precision):
+    """At each recall, take the max precision seen at >= that recall.
+    Produces a clean monotonic curve from non-monotonic sweep points."""
+    order = np.argsort(recall)
+    r = np.asarray(recall)[order]
+    p = np.asarray(precision)[order]
+    p_env = np.maximum.accumulate(p[::-1])[::-1]
+    return r, p_env
+
+
 # ==========================================================
-# Load GT spine instances (one file = one identity)
+# Load GT spine instances
 # ==========================================================
 gt_paths = sorted(glob.glob(GT_SPINE_PATTERN))
 if not gt_paths:
@@ -182,7 +184,6 @@ for model, ppath in SPINE_PROBS.items():
                 "sum":        int(sizes[i]),
             })
 
-        # All overlapping pairs → IoU
         pairs = []
         for ci, c in enumerate(comps):
             for gi, g in enumerate(gt_info):
@@ -195,7 +196,6 @@ for model, ppath in SPINE_PROBS.items():
                 if v > 0:
                     pairs.append((v, ci, gi))
 
-        # Greedy one-to-one assignment by IoU descending
         pairs.sort(reverse=True)
         used_c, used_g = set(), set()
         tp = 0
@@ -228,14 +228,13 @@ print(f"\nSaved: {OUT_SWEEP_CSV}")
 
 
 # ==========================================================
-# Per-model summary: best F1 operating point, and instance-AP
-# (instance-AP = area under the PR curve along the threshold sweep)
+# Per-model summary
 # ==========================================================
 summary_rows = []
 for model, d in sweep.groupby("model"):
     d_sorted = d.sort_values("recall")
-    # trapezoidal integral of precision over recall as a simple instance-AP proxy
-    ap_inst = float(np.trapz(d_sorted["precision"].values, d_sorted["recall"].values))
+    ap_inst  = float(np.trapz(d_sorted["precision"].values,
+                              d_sorted["recall"].values))
     best = d.loc[d["F1"].idxmax()]
     summary_rows.append({
         "model":                 model,
@@ -262,45 +261,61 @@ print(summary_df.to_string(index=False))
 
 
 # ==========================================================
-# PR plot (points colored by threshold; line connects in threshold order)
+# PR plot — clean upper envelope + best-F1 star
 # ==========================================================
-plt.figure(figsize=(7, 5))
+fig, ax = plt.subplots(figsize=(7, 5))
+colors = {"32F": "tab:blue", "32F_94nm": "tab:orange"}
+
 for model, d in sweep.groupby("model"):
-    d = d.sort_values("threshold")
-    plt.plot(d["recall"], d["precision"], lw=0.8, alpha=0.4)
-    sc = plt.scatter(d["recall"], d["precision"], c=d["threshold"],
-                     cmap="viridis", s=40, label=model,
-                     edgecolors="k", linewidths=0.5, vmin=0, vmax=1)
-plt.colorbar(sc, label="probability threshold")
-plt.xlabel("Recall")
-plt.ylabel("Precision")
-plt.title(f"Instance-wise PR sweep  (IoU ≥ {IOU_MATCH})")
-plt.xlim(0, 1); plt.ylim(0, 1)
-plt.grid(True); plt.legend()
-plt.tight_layout()
-plt.savefig(OUT_PR_PNG, dpi=300); plt.close()
+    c = colors.get(model, None)
+    # faded raw points so the underlying sweep is still visible
+    ax.scatter(d["recall"], d["precision"], s=25, alpha=0.35,
+               color=c, edgecolors="none")
+    # clean monotonic envelope
+    r_env, p_env = upper_envelope(d["recall"].values, d["precision"].values)
+    ax.plot(r_env, p_env, "-", lw=2.5, color=c, label=model)
+    # best-F1 operating point
+    best = d.loc[d["F1"].idxmax()]
+    ax.plot(best["recall"], best["precision"],
+            marker="*", ms=18, color=c,
+            markeredgecolor="k", markeredgewidth=1,
+            label=f"{model} best F1={best['F1']:.2f} @ t={best['threshold']:.2f}")
+
+ax.set_xlabel("Recall")
+ax.set_ylabel("Precision")
+ax.set_title(f"Instance-wise PR  (IoU ≥ {IOU_MATCH})")
+ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+ax.grid(True); ax.legend(loc="lower left", fontsize=9)
+fig.tight_layout()
+fig.savefig(OUT_PR_PNG, dpi=300); plt.close(fig)
 print(f"Saved: {OUT_PR_PNG}")
 
 
 # ==========================================================
-# "ROC-style" plot for instance level.
-# True FPR is not well defined for instance detection (no fixed number of
-# negative instances), so we plot recall vs. FP / max(FP) per model — a common
-# proxy. This is informative for comparing models on the same dataset.
+# Metrics-vs-threshold (replaces the noisy ROC-style plot)
 # ==========================================================
-plt.figure(figsize=(7, 5))
-for model, d in sweep.groupby("model"):
-    d = d.sort_values("threshold")
-    fp_max = d["FP"].max() if d["FP"].max() > 0 else 1
-    fpr_proxy = d["FP"] / fp_max
-    plt.plot(fpr_proxy, d["recall"], "-o", ms=4, lw=1.5, label=model)
-plt.xlabel("FP / max(FP)   (proxy false-positive rate)")
-plt.ylabel("Recall (TP / GT)")
-plt.title(f"Instance-wise ROC-style sweep  (IoU ≥ {IOU_MATCH})")
-plt.xlim(0, 1); plt.ylim(0, 1)
-plt.grid(True); plt.legend()
-plt.tight_layout()
-plt.savefig(OUT_ROC_PNG, dpi=300); plt.close()
-print(f"Saved: {OUT_ROC_PNG}")
+models = list(sweep["model"].unique())
+fig, axes = plt.subplots(1, len(models), figsize=(6 * len(models), 5), sharey=True)
+if len(models) == 1:
+    axes = [axes]
+
+for ax, model in zip(axes, models):
+    d = sweep[sweep["model"] == model].sort_values("threshold")
+    ax.plot(d["threshold"], d["precision"], "-o", ms=4, label="Precision")
+    ax.plot(d["threshold"], d["recall"],    "-o", ms=4, label="Recall")
+    ax.plot(d["threshold"], d["F1"],        "-o", ms=4, label="F1", lw=2.5)
+    best_t = d.loc[d["F1"].idxmax(), "threshold"]
+    ax.axvline(best_t, color="k", ls="--", lw=1, alpha=0.5)
+    ax.text(best_t, 0.02, f" best F1\n @ t={best_t:.2f}", fontsize=9)
+    ax.set_xlabel("Probability threshold")
+    ax.set_title(model)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.grid(True)
+    ax.legend(loc="upper right", fontsize=9)
+
+axes[0].set_ylabel("Score")
+fig.suptitle(f"Instance-wise metrics vs. threshold  (IoU ≥ {IOU_MATCH})")
+fig.tight_layout()
+fig.savefig(OUT_VS_T_PNG, dpi=300); plt.close(fig)
+print(f"Saved: {OUT_VS_T_PNG}")
 
 print("\nDone.")
