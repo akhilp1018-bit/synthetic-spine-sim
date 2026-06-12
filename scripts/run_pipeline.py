@@ -85,10 +85,10 @@ OUT_ROOT = f"outputs/{SAMPLE_NAME}"
 # ----------------------------------------------------------
 EXPERIMENTS = [
     {
-        "tag"         : "xy94_z500_spacing100",
+        "tag"         : "xy94_z500_spacing200",
         "xy_um_per_px": 0.094,
         "z_step_um"   : 0.5,
-        "spacing_nm"  : 100,
+        "spacing_nm"  : 200,
     },
     # Uncomment to also run 200 nm experiment:
     # {
@@ -103,7 +103,7 @@ EXPERIMENTS = [
 # ----------------------------------------------------------
 # Mesh preprocessing
 # ----------------------------------------------------------
-SCALE_TO_NM    = 1000     # mesh is in µm, convert to nm
+SCALE_TO_NM    = 1000000     # mesh is in µm, convert to nm
 RECENTER       = False    # keep False for aligned submeshes
 
 
@@ -164,7 +164,7 @@ DENDRITE_MASK_REL_THRESHOLD = 0.2
 # ----------------------------------------------------------
 # Debug
 # ----------------------------------------------------------
-SAVE_DEBUG_COMPONENTS = True
+SAVE_DEBUG_COMPONENTS = False
 
 
 # ==========================================================
