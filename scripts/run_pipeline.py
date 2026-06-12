@@ -84,19 +84,19 @@ OUT_ROOT = f"outputs/{SAMPLE_NAME}"
 # Add or remove entries to run different resolutions.
 # ----------------------------------------------------------
 EXPERIMENTS = [
-    {
-        "tag"         : "xy94_z500_spacing200",
-        "xy_um_per_px": 0.094,
-        "z_step_um"   : 0.5,
-        "spacing_nm"  : 200,
-    },
+    #{
+    #   "tag"         : "xy94_z500_spacing200",
+    #   "xy_um_per_px": 0.094,
+    #    "z_step_um"   : 0.5,
+    #    "spacing_nm"  : 100,
+    #},
     # Uncomment to also run 200 nm experiment:
-    # {
-    #     "tag"         : "xy200_z500_spacing200",
-    #     "xy_um_per_px": 0.2,
-    #     "z_step_um"   : 0.5,
-    #     "spacing_nm"  : 200,
-    # },
+     {
+         "tag"         : "xy200_z500_spacing200",
+         "xy_um_per_px": 0.2,
+         "z_step_um"   : 0.5,
+         "spacing_nm"  : 200,
+     },
 ]
 
 
@@ -164,7 +164,7 @@ DENDRITE_MASK_REL_THRESHOLD = 0.2
 # ----------------------------------------------------------
 # Debug
 # ----------------------------------------------------------
-SAVE_DEBUG_COMPONENTS = False
+SAVE_DEBUG_COMPONENTS = True
 
 
 # ==========================================================
