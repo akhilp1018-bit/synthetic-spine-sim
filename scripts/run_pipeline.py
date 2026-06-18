@@ -8,7 +8,7 @@ This script produces full-resolution 16-bit TIFF stacks with:
   - Combined image (dendrite + spines)
   - Spine mask
   - Dendrite mask
-  - Individual spine images and masks (debug)
+  - Individual spine masks (and optionally clean images)
   - Run metadata .txt
 
 For generating 1000 training instances see:
@@ -24,9 +24,10 @@ Output
     ├── zstack_<tag>_image.tif
     ├── zstack_<tag>_spine_mask.tif
     ├── zstack_<tag>_dendrite_mask.tif
-    ├── zstack_<tag>_spine1_clean.tif
-    ├── zstack_<tag>_dendrite_clean.tif
-    └── metadata_<tag>.txt
+    ├── zstack_<tag>_spine1_mask.tif
+    ├── zstack_<tag>_spine2_mask.tif
+    ...
+    └── metadata_<tag>_image.txt
 """
 
 import sys
@@ -36,11 +37,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import torch
 import mitsuba as mi
 
-from src.mesh_utils     import prepare_all_meshes, get_combined_bbox_nm
-from src.roi_utils      import compute_full_bbox, compute_roi_bbox, compute_voxel_grid
-from src.psf_utils      import load_psf_zyx, make_gaussian_psf_matched_zyx
-from src.density_utils  import ensure_psf_odd_xy
-from src.render_utils   import (
+from src.mesh_utils    import prepare_all_meshes, get_combined_bbox_nm
+from src.roi_utils     import compute_full_bbox, compute_roi_bbox, compute_voxel_grid
+from src.psf_utils     import load_psf_zyx, make_gaussian_psf_matched_zyx
+from src.density_utils import ensure_psf_odd_xy
+from src.render_utils  import (
     build_density_for_mesh,
     render_density,
     create_masks,
@@ -60,7 +61,7 @@ print("Using device:", device)
 # SETTINGS — change these for each sample/experiment
 # ==========================================================
 
-SAMPLE_NAME   = "sample_003"
+SAMPLE_NAME   = "sample_004"
 BASE_DIR      = f"neuron/{SAMPLE_NAME}"
 
 DENDRITE_PATH = os.path.join(BASE_DIR, "dendrite00.ply")
@@ -83,7 +84,6 @@ OUT_ROOT = f"outputs/{SAMPLE_NAME}"
 
 # ----------------------------------------------------------
 # Experiments
-# Add or remove entries to run different resolutions.
 # ----------------------------------------------------------
 EXPERIMENTS = [
     {
@@ -105,8 +105,8 @@ EXPERIMENTS = [
 # ----------------------------------------------------------
 # Mesh preprocessing
 # ----------------------------------------------------------
-SCALE_TO_NM    = 1000     # mesh is in µm, convert to nm
-RECENTER       = False    # keep False for aligned submeshes
+SCALE_TO_NM = 1       # mesh exported in nm from Blender
+RECENTER    = False   # keep False for aligned submeshes
 
 
 # ----------------------------------------------------------
@@ -123,16 +123,16 @@ GAUSS_PSF_SHAPE_ZYX = (13, 65, 65)
 # ----------------------------------------------------------
 # ROI (optional — crop to fixed FOV)
 # ----------------------------------------------------------
-USE_ROI        = False
-ROI_SIZE_UM_X  = 200.0
-ROI_SIZE_UM_Y  = 200.0
-MARGIN         = 0.05
+USE_ROI       = False
+ROI_SIZE_UM_X = 200.0
+ROI_SIZE_UM_Y = 200.0
+MARGIN        = 0.05
 
 
 # ----------------------------------------------------------
 # Labeling / density
 # ----------------------------------------------------------
-LABELING_MODE            = "membrane"   # "membrane" or "pseudofilled"
+LABELING_MODE            = "membrane"
 BATCH_FACES              = 2048
 PSEUDOFILL_SIGMA_ZYX     = (2.0, 2.5, 2.5)
 DENSITY_SMOOTH_SIGMA_ZYX = (0.6, 0.8, 0.8)
@@ -146,13 +146,13 @@ INTENSITY_VAR_SEED       = 0
 # ----------------------------------------------------------
 # Noise
 # ----------------------------------------------------------
-USE_NOISE                  = False
-NOISE_SWEEP                = False
-NOISE_NUM_STEPS            = 20
-NOISE_PEAK_PHOTONS_MAX     = 500.0
-NOISE_PEAK_PHOTONS_MIN     = 50.0
-NOISE_READ_STD             = 1.0
-NOISE_SEED                 = 0
+USE_NOISE                   = False
+NOISE_SWEEP                 = False
+NOISE_NUM_STEPS             = 20
+NOISE_PEAK_PHOTONS_MAX      = 500.0
+NOISE_PEAK_PHOTONS_MIN      = 50.0
+NOISE_READ_STD              = 1.0
+NOISE_SEED                  = 0
 NOISE_GAUSSIAN_CHUNK_SLICES = 8
 
 
@@ -165,8 +165,11 @@ DENDRITE_MASK_REL_THRESHOLD = 0.2
 
 # ----------------------------------------------------------
 # Debug
+# SAVE_DEBUG_COMPONENTS   = True  → saves individual spine masks (needed for evaluation)
+# SAVE_DEBUG_CLEAN_IMAGES = False → skips individual spine clean images (saves memory)
 # ----------------------------------------------------------
-SAVE_DEBUG_COMPONENTS = True
+SAVE_DEBUG_COMPONENTS   = True
+SAVE_DEBUG_CLEAN_IMAGES = False
 
 
 # ==========================================================
@@ -245,7 +248,7 @@ for exp in EXPERIMENTS:
     print(f"PSF : {psf_tag}  shape={tuple(psf_eff.shape)}")
 
     # ----------------------------------------------------------
-    # Build densities
+    # Shared density kwargs
     # ----------------------------------------------------------
     density_kwargs = dict(
         labeling_mode            = LABELING_MODE,
@@ -264,41 +267,40 @@ for exp in EXPERIMENTS:
         intensity_var_seed       = INTENSITY_VAR_SEED,
     )
 
-    # ----------------------------------------------------------
-    # PASS 1: Build combined density (memory efficient)
-    # Process one spine at a time, accumulate into rho_spines
-    # Only 1 spine density in GPU memory at a time!
-    # ----------------------------------------------------------
+    base_tag = f"{SAMPLE_NAME}_{LABELING_MODE}_{psf_tag}_{exp_tag}"
+
+    # ==========================================================
+    # PASS 1: Build combined density + render + save main outputs
+    # Memory efficient: one spine density at a time!
+    # ==========================================================
+    print("\n--- Pass 1: Building combined density ---")
+
     rho_dendrite = build_density_for_mesh(
         sim_dendrite_path, tag="dendrite", **density_kwargs
     )
 
-    # Accumulate all spine densities one at a time
+    # Accumulate spine densities one at a time
     rho_spines = torch.zeros_like(rho_dendrite)
     for i, sp in enumerate(sim_spine_paths, start=1):
-        rho_sp = build_density_for_mesh(sp, tag=f"spine_{i}", **density_kwargs)
+        rho_sp     = build_density_for_mesh(sp, tag=f"spine_{i}", **density_kwargs)
         rho_spines = rho_spines + rho_sp
-        del rho_sp  # free GPU memory immediately!
+        del rho_sp
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
     rho_all = rho_dendrite + rho_spines
 
-    # ----------------------------------------------------------
     # Render combined volumes
-    # ----------------------------------------------------------
     vol_dendrite = render_density(rho_dendrite, psf_eff, "dendrite", device)
     vol_spines   = render_density(rho_spines,   psf_eff, "spines",   device)
     vol_all      = render_density(rho_all,       psf_eff, "all",      device)
 
-    # Free combined densities — no longer needed
+    # Free densities
     del rho_dendrite, rho_spines, rho_all
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    # ----------------------------------------------------------
-    # Masks from combined volumes
-    # ----------------------------------------------------------
+    # Create masks
     spine_mask, dendrite_mask = create_masks(
         vol_spines,
         vol_dendrite,
@@ -306,10 +308,7 @@ for exp in EXPERIMENTS:
         dendrite_threshold_rel = DENDRITE_MASK_REL_THRESHOLD,
     )
 
-    # Save combined masks and image immediately
-    os.makedirs(OUT_DIR, exist_ok=True)
-    base_tag = f"{SAMPLE_NAME}_{LABELING_MODE}_{psf_tag}_{exp_tag}"
-
+    # Save combined outputs
     save_u16_stack(binary_mask_to_u16(spine_mask),    OUT_DIR, f"{base_tag}_spine_mask",    xy_um_per_px, z_step_um)
     save_u16_stack(binary_mask_to_u16(dendrite_mask), OUT_DIR, f"{base_tag}_dendrite_mask", xy_um_per_px, z_step_um)
     save_u16_stack(tensor_to_u16_stack(vol_all),      OUT_DIR, f"{base_tag}_image",         xy_um_per_px, z_step_um)
@@ -322,15 +321,14 @@ for exp in EXPERIMENTS:
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    # ----------------------------------------------------------
-    # PASS 2: Process each spine individually for masks
-    # One spine at a time — very memory efficient!
-    # ----------------------------------------------------------
+    # ==========================================================
+    # PASS 2: Individual spine masks (one at a time)
+    # ==========================================================
     if SAVE_DEBUG_COMPONENTS:
-        print("\nPass 2: saving individual spine masks...")
+        print("\n--- Pass 2: Saving individual spine masks ---")
         for i, sp in enumerate(sim_spine_paths, start=1):
-            rho_sp  = build_density_for_mesh(sp, tag=f"spine_{i}_mask", **density_kwargs)
-            vol_sp  = render_density(rho_sp, psf_eff, f"spine_{i}", device)
+            rho_sp    = build_density_for_mesh(sp, tag=f"spine_{i}_mask", **density_kwargs)
+            vol_sp    = render_density(rho_sp, psf_eff, f"spine_{i}", device)
 
             sp_max    = float(vol_sp.max().item())
             sp_thresh = SPINE_MASK_REL_THRESHOLD * sp_max if sp_max > 0 else 0.0
@@ -345,11 +343,9 @@ for exp in EXPERIMENTS:
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
-    # ----------------------------------------------------------
-    # Metadata
-    # ----------------------------------------------------------
-
+    # ==========================================================
     # Save metadata
+    # ==========================================================
     meta_lines = [
         "=== Simulation run metadata ===",
         f"SAMPLE_NAME={SAMPLE_NAME}",
@@ -362,18 +358,24 @@ for exp in EXPERIMENTS:
         f"H={grid['H']}",
         f"NUM_SLICES={grid['NUM_SLICES']}",
         f"PSF_MODE={psf_tag}",
+        f"PSF_FILE={PSF_EM_TIF}",
+        f"LAMBDA_NM={LAMBDA_NM}",
+        f"NA={NA}",
+        f"REF_INDEX={REF_INDEX}",
         f"NUM_SPINES={len(sim_spine_paths)}",
         f"SPINE_MASK_REL_THRESHOLD={SPINE_MASK_REL_THRESHOLD}",
         f"DENDRITE_MASK_REL_THRESHOLD={DENDRITE_MASK_REL_THRESHOLD}",
         f"SAVE_DEBUG_COMPONENTS={SAVE_DEBUG_COMPONENTS}",
         f"SAVE_DEBUG_CLEAN_IMAGES={SAVE_DEBUG_CLEAN_IMAGES}",
+        f"USE_ROI={USE_ROI}",
+        f"DEVICE={device}",
     ]
     save_run_metadata_txt(OUT_DIR, f"{base_tag}_image", meta_lines)
     print(f"  Metadata saved.")
 
-    # ----------------------------------------------------------
+    # ==========================================================
     # Cleanup
-    # ----------------------------------------------------------
+    # ==========================================================
     del psf_eff
     if device.type == "cuda":
         torch.cuda.empty_cache()
