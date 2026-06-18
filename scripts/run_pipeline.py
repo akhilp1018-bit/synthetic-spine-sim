@@ -44,7 +44,6 @@ from src.density_utils import ensure_psf_odd_xy
 from src.render_utils  import (
     build_density_for_mesh,
     render_density,
-    create_masks,
     save_u16_stack,
     tensor_to_u16_stack,
     binary_mask_to_u16,
@@ -165,8 +164,8 @@ DENDRITE_MASK_REL_THRESHOLD = 0.2
 
 # ----------------------------------------------------------
 # Debug
-# SAVE_DEBUG_COMPONENTS   = True  → saves individual spine masks (needed for evaluation)
-# SAVE_DEBUG_CLEAN_IMAGES = False → skips individual spine clean images (saves memory)
+# SAVE_DEBUG_COMPONENTS   = True  → saves individual spine masks
+# SAVE_DEBUG_CLEAN_IMAGES = False → skips individual spine clean images
 # ----------------------------------------------------------
 SAVE_DEBUG_COMPONENTS   = True
 SAVE_DEBUG_CLEAN_IMAGES = False
@@ -270,9 +269,11 @@ for exp in EXPERIMENTS:
     base_tag = f"{SAMPLE_NAME}_{LABELING_MODE}_{psf_tag}_{exp_tag}"
 
     # ==========================================================
-    # PASS 1: Build combined density + render + save main outputs
-    # Memory efficient: one spine density at a time!
-    # Render one volume at a time and free density immediately!
+    # PASS 1: Build combined density + render + save
+    # FULLY memory efficient:
+    # - One spine density at a time
+    # - Render + save + delete each volume immediately
+    # - Never more than 1 density + 1 volume in GPU at once!
     # ==========================================================
     print("\n--- Pass 1: Building combined density ---")
 
@@ -291,40 +292,47 @@ for exp in EXPERIMENTS:
 
     rho_all = rho_dendrite + rho_spines
 
-    # Render one at a time, free density immediately after each render!
-    vol_dendrite = render_density(rho_dendrite, psf_eff, "dendrite", device)
-    del rho_dendrite
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+    print("\n--- Rendering and saving combined image ---")
 
-    vol_spines = render_density(rho_spines, psf_eff, "spines", device)
-    del rho_spines
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-
+    # Render all → save image → delete immediately
     vol_all = render_density(rho_all, psf_eff, "all", device)
     del rho_all
     if device.type == "cuda":
         torch.cuda.empty_cache()
+    save_u16_stack(tensor_to_u16_stack(vol_all), OUT_DIR, f"{base_tag}_image", xy_um_per_px, z_step_um)
+    del vol_all
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
-    # Create masks
-    spine_mask, dendrite_mask = create_masks(
-        vol_spines,
-        vol_dendrite,
-        spine_threshold_rel    = SPINE_MASK_REL_THRESHOLD,
-        dendrite_threshold_rel = DENDRITE_MASK_REL_THRESHOLD,
-    )
+    # Render spines → create mask → save → delete immediately
+    vol_spines = render_density(rho_spines, psf_eff, "spines", device)
+    del rho_spines
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    spine_max    = float(vol_spines.max().item())
+    spine_thresh = SPINE_MASK_REL_THRESHOLD * spine_max if spine_max > 0 else 0.0
+    spine_mask   = (vol_spines > spine_thresh).to(torch.float32)
+    del vol_spines
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    save_u16_stack(binary_mask_to_u16(spine_mask), OUT_DIR, f"{base_tag}_spine_mask", xy_um_per_px, z_step_um)
+    del spine_mask
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
-    # Save combined outputs
-    save_u16_stack(binary_mask_to_u16(spine_mask),    OUT_DIR, f"{base_tag}_spine_mask",    xy_um_per_px, z_step_um)
+    # Render dendrite → create mask → save → delete immediately
+    vol_dendrite    = render_density(rho_dendrite, psf_eff, "dendrite", device)
+    del rho_dendrite
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    dendrite_max    = float(vol_dendrite.max().item())
+    dendrite_thresh = DENDRITE_MASK_REL_THRESHOLD * dendrite_max if dendrite_max > 0 else 0.0
+    dendrite_mask   = (vol_dendrite > dendrite_thresh).to(torch.float32)
+    del vol_dendrite
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
     save_u16_stack(binary_mask_to_u16(dendrite_mask), OUT_DIR, f"{base_tag}_dendrite_mask", xy_um_per_px, z_step_um)
-    save_u16_stack(tensor_to_u16_stack(vol_all),      OUT_DIR, f"{base_tag}_image",         xy_um_per_px, z_step_um)
-
-    if SAVE_DEBUG_COMPONENTS and SAVE_DEBUG_CLEAN_IMAGES:
-        save_u16_stack(tensor_to_u16_stack(vol_dendrite), OUT_DIR, f"{base_tag}_dendrite_clean", xy_um_per_px, z_step_um)
-        save_u16_stack(tensor_to_u16_stack(vol_spines),   OUT_DIR, f"{base_tag}_spines_clean",   xy_um_per_px, z_step_um)
-
-    del vol_dendrite, vol_spines, vol_all, spine_mask, dendrite_mask
+    del dendrite_mask
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
@@ -334,8 +342,8 @@ for exp in EXPERIMENTS:
     if SAVE_DEBUG_COMPONENTS:
         print("\n--- Pass 2: Saving individual spine masks ---")
         for i, sp in enumerate(sim_spine_paths, start=1):
-            rho_sp    = build_density_for_mesh(sp, tag=f"spine_{i}_mask", **density_kwargs)
-            vol_sp    = render_density(rho_sp, psf_eff, f"spine_{i}", device)
+            rho_sp = build_density_for_mesh(sp, tag=f"spine_{i}_mask", **density_kwargs)
+            vol_sp = render_density(rho_sp, psf_eff, f"spine_{i}", device)
             del rho_sp
             if device.type == "cuda":
                 torch.cuda.empty_cache()
