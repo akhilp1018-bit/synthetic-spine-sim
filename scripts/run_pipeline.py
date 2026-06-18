@@ -272,6 +272,7 @@ for exp in EXPERIMENTS:
     # ==========================================================
     # PASS 1: Build combined density + render + save main outputs
     # Memory efficient: one spine density at a time!
+    # Render one volume at a time and free density immediately!
     # ==========================================================
     print("\n--- Pass 1: Building combined density ---")
 
@@ -290,13 +291,19 @@ for exp in EXPERIMENTS:
 
     rho_all = rho_dendrite + rho_spines
 
-    # Render combined volumes
+    # Render one at a time, free density immediately after each render!
     vol_dendrite = render_density(rho_dendrite, psf_eff, "dendrite", device)
-    vol_spines   = render_density(rho_spines,   psf_eff, "spines",   device)
-    vol_all      = render_density(rho_all,       psf_eff, "all",      device)
+    del rho_dendrite
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
-    # Free densities
-    del rho_dendrite, rho_spines, rho_all
+    vol_spines = render_density(rho_spines, psf_eff, "spines", device)
+    del rho_spines
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    vol_all = render_density(rho_all, psf_eff, "all", device)
+    del rho_all
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
@@ -329,6 +336,9 @@ for exp in EXPERIMENTS:
         for i, sp in enumerate(sim_spine_paths, start=1):
             rho_sp    = build_density_for_mesh(sp, tag=f"spine_{i}_mask", **density_kwargs)
             vol_sp    = render_density(rho_sp, psf_eff, f"spine_{i}", device)
+            del rho_sp
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
 
             sp_max    = float(vol_sp.max().item())
             sp_thresh = SPINE_MASK_REL_THRESHOLD * sp_max if sp_max > 0 else 0.0
@@ -339,7 +349,7 @@ for exp in EXPERIMENTS:
             if SAVE_DEBUG_CLEAN_IMAGES:
                 save_u16_stack(tensor_to_u16_stack(vol_sp), OUT_DIR, f"{base_tag}_spine{i}_clean", xy_um_per_px, z_step_um)
 
-            del rho_sp, vol_sp, sp_mask_i
+            del vol_sp, sp_mask_i
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
