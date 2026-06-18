@@ -85,30 +85,6 @@ def build_density_for_mesh(
 ):
     """
     Convert a mesh into a smoothed voxel density grid.
-
-    Parameters
-    ----------
-    mesh_path : str
-        Path to the prepared .ply mesh file.
-    tag : str
-        Label for logging (e.g. 'dendrite', 'spine_1').
-    labeling_mode : str
-        'membrane' or 'pseudofilled'.
-    spacing_nm : float
-        Sampling spacing on the mesh surface in nm.
-    origin_nm : tuple
-        (x, y, z) origin of the voxel grid in nm.
-    voxel_size_nm_xyz : tuple
-        (vx, vy, vz) voxel size in nm.
-    shape_zyx : tuple
-        (Z, Y, X) shape of the output voxel grid.
-    device : torch.device
-        CPU or CUDA device.
-
-    Returns
-    -------
-    torch.Tensor
-        Smoothed density volume of shape (Z, Y, X).
     """
     print(f"\n{'='*50}")
     print(f"  Building density: {tag}  [{mesh_path}]")
@@ -192,21 +168,6 @@ def render_density(rho, psf_eff, tag, device):
     This is the core microscope imaging step:
     - The PSF encodes the objective lens blur (wavelength, NA, pixel size)
     - Each Z slice represents one focal plane of the microscope
-
-    Parameters
-    ----------
-    rho : torch.Tensor
-        Density volume (Z, Y, X).
-    psf_eff : torch.Tensor
-        Effective PSF kernel (Z, Y, X).
-    tag : str
-        Label for logging.
-    device : torch.device
-
-    Returns
-    -------
-    torch.Tensor
-        Rendered focal stack (Z, Y, X).
     """
     t0 = time.time()
     vol = focal_stack_from_density(rho, psf_eff, device=device)
@@ -226,18 +187,6 @@ def render_density(rho, psf_eff, tag, device):
 def create_masks(vol_spines, vol_dendrite, spine_threshold_rel=0.2, dendrite_threshold_rel=0.2):
     """
     Create binary masks for spines and dendrite from their rendered volumes.
-
-    Parameters
-    ----------
-    vol_spines : torch.Tensor
-    vol_dendrite : torch.Tensor
-    spine_threshold_rel : float
-        Fraction of max intensity used as threshold.
-    dendrite_threshold_rel : float
-
-    Returns
-    -------
-    spine_mask, dendrite_mask : torch.Tensor (float32)
     """
     spine_max = float(vol_spines.max().item())
     spine_thresh = spine_threshold_rel * spine_max if spine_max > 0 else 0.0
@@ -278,29 +227,16 @@ def save_dataset_outputs(
     noise_seed=0,
     noise_gaussian_chunk_slices=8,
     save_debug_components=True,
+    save_debug_clean_images=True,   # NEW: set False to skip individual spine clean images
     metadata_lines=None,
     device=None,
 ):
     """
     Save all simulation outputs: masks, clean images, noisy images, metadata.
 
-    Parameters
-    ----------
-    out_dir : str
-        Output directory.
-    vol_all_clean : torch.Tensor
-        Combined (dendrite + spines) rendered volume.
-    vol_dendrite_clean : torch.Tensor
-    vol_spines_clean : torch.Tensor
-    vol_spine_list_clean : list of torch.Tensor
-        Individual spine volumes.
-    spine_mask, dendrite_mask : torch.Tensor
-    base_tag : str
-        Prefix for all output filenames.
-    xy_um_per_px, z_step_um : float
-        Pixel calibration for TIFF metadata.
-    metadata_lines : list of str, optional
-        Lines to write into the metadata .txt file.
+    save_debug_components   : if True, saves individual spine masks
+    save_debug_clean_images : if True, also saves individual spine clean images
+                              set False to save memory with many spines
     """
     if device is None:
         device = torch.device("cpu")
@@ -313,17 +249,24 @@ def save_dataset_outputs(
     else:
         noise_levels = [None]
 
-    # Save masks
+    # Save combined masks
     save_u16_stack(binary_mask_to_u16(spine_mask),    out_dir, f"{base_tag}_spine_mask",    xy_um_per_px, z_step_um)
     save_u16_stack(binary_mask_to_u16(dendrite_mask), out_dir, f"{base_tag}_dendrite_mask", xy_um_per_px, z_step_um)
 
     # Save debug components
     if save_debug_components:
-        save_u16_stack(tensor_to_u16_stack(vol_dendrite_clean), out_dir, f"{base_tag}_dendrite_clean", xy_um_per_px, z_step_um)
-        save_u16_stack(tensor_to_u16_stack(vol_spines_clean),   out_dir, f"{base_tag}_spines_clean",   xy_um_per_px, z_step_um)
 
+        # Save combined clean images only if requested
+        if save_debug_clean_images:
+            save_u16_stack(tensor_to_u16_stack(vol_dendrite_clean), out_dir, f"{base_tag}_dendrite_clean", xy_um_per_px, z_step_um)
+            save_u16_stack(tensor_to_u16_stack(vol_spines_clean),   out_dir, f"{base_tag}_spines_clean",   xy_um_per_px, z_step_um)
+
+        # Always save individual spine masks (needed for evaluation)
+        # Only save individual spine clean images if requested
         for i, vol_sp in enumerate(vol_spine_list_clean, start=1):
-            save_u16_stack(tensor_to_u16_stack(vol_sp), out_dir, f"{base_tag}_spine{i}_clean", xy_um_per_px, z_step_um)
+
+            if save_debug_clean_images:
+                save_u16_stack(tensor_to_u16_stack(vol_sp), out_dir, f"{base_tag}_spine{i}_clean", xy_um_per_px, z_step_um)
 
             sp_max = float(vol_sp.max().item())
             sp_thresh = spine_mask_rel_threshold * sp_max if sp_max > 0 else 0.0

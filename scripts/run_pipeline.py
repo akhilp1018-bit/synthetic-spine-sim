@@ -58,7 +58,7 @@ print("Using device:", device)
 # SETTINGS — change these for each sample/experiment
 # ==========================================================
 
-SAMPLE_NAME   = "sample_001"
+SAMPLE_NAME   = "sample_004"
 BASE_DIR      = f"neuron/{SAMPLE_NAME}"
 
 DENDRITE_PATH = os.path.join(BASE_DIR, "dendrite00.ply")
@@ -84,26 +84,26 @@ OUT_ROOT = f"outputs/{SAMPLE_NAME}"
 # Add or remove entries to run different resolutions.
 # ----------------------------------------------------------
 EXPERIMENTS = [
-    #{
-    #   "tag"         : "xy94_z500_spacing200",
-    #   "xy_um_per_px": 0.094,
-    #    "z_step_um"   : 0.5,
-    #    "spacing_nm"  : 100,
-    #},
+    {
+       "tag"         : "xy94_z500_spacing200",
+       "xy_um_per_px": 0.094,
+        "z_step_um"   : 0.5,
+        "spacing_nm"  : 100,
+    },
     # Uncomment to also run 200 nm experiment:
-     {
-         "tag"         : "xy200_z500_spacing200",
-         "xy_um_per_px": 0.2,
-         "z_step_um"   : 0.5,
-         "spacing_nm"  : 200,
-     },
+     #{
+      #   "tag"         : "xy200_z500_spacing200",
+       #  "xy_um_per_px": 0.2,
+       #  "z_step_um"   : 0.5,
+        # "spacing_nm"  : 200,
+    # },
 ]
 
 
 # ----------------------------------------------------------
 # Mesh preprocessing
 # ----------------------------------------------------------
-SCALE_TO_NM    = 1000000     # mesh is in µm, convert to nm
+SCALE_TO_NM    = 1    # mesh exported in nm from Blender
 RECENTER       = False    # keep False for aligned submeshes
 
 
@@ -165,6 +165,7 @@ DENDRITE_MASK_REL_THRESHOLD = 0.2
 # Debug
 # ----------------------------------------------------------
 SAVE_DEBUG_COMPONENTS = True
+SAVE_DEBUG_CLEAN_IMAGES = False  # skip individual spine clean images
 
 
 # ==========================================================
@@ -371,6 +372,7 @@ for exp in EXPERIMENTS:
         noise_seed                   = NOISE_SEED,
         noise_gaussian_chunk_slices  = NOISE_GAUSSIAN_CHUNK_SLICES,
         save_debug_components        = SAVE_DEBUG_COMPONENTS,
+        save_debug_clean_images = SAVE_DEBUG_CLEAN_IMAGES,
         metadata_lines               = meta_lines,
         device                       = device,
     )
