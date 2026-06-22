@@ -60,7 +60,7 @@ print("Using device:", device)
 # SETTINGS — change these for each sample/experiment
 # ==========================================================
 
-SAMPLE_NAME   = "sample_004"
+SAMPLE_NAME   = "sample_001"
 BASE_DIR      = f"neuron/{SAMPLE_NAME}"
 
 DENDRITE_PATH = os.path.join(BASE_DIR, "dendrite00.ply")
@@ -104,7 +104,7 @@ EXPERIMENTS = [
 # ----------------------------------------------------------
 # Mesh preprocessing
 # ----------------------------------------------------------
-SCALE_TO_NM = 1       # mesh exported in nm from Blender
+SCALE_TO_NM = 1000000      # mesh exported in nm from Blender
 RECENTER    = False   # keep False for aligned submeshes
 
 
