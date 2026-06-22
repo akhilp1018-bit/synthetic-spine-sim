@@ -39,9 +39,9 @@ import tifffile
 import mitsuba as mi
 
 from src.transform_utils import generate_random_transform, cleanup_temp_meshes
-from src.render_utils import build_density_for_mesh, render_density, create_masks
-from src.psf_utils import load_psf_zyx, make_gaussian_psf_matched_zyx
-from src.density_utils import ensure_psf_odd_xy
+from src.render_utils    import build_density_for_mesh, render_density
+from src.psf_utils       import load_psf_zyx, make_gaussian_psf_matched_zyx
+from src.density_utils   import ensure_psf_odd_xy
 
 mi.set_variant("scalar_rgb")
 
@@ -53,7 +53,7 @@ print("Using device:", device)
 # Settings — change these for your sample
 # ==========================================================
 
-SAMPLE_NAME   = "sample_003"
+SAMPLE_NAME   = "sample_004"
 BASE_DIR      = f"neuron/{SAMPLE_NAME}"
 
 DENDRITE_PATH = os.path.join(BASE_DIR, "dendrite00.ply")
@@ -71,15 +71,15 @@ print(f"Spines   : {len(SPINE_PATHS)} found")
 # Output
 # ----------------------------------------------------------
 OUT_ROOT      = "training_data"
-NUM_INSTANCES = 1000
+NUM_INSTANCES = 5        # ← start with 5 for testing, change to 1000 for full run
 
 
 # ----------------------------------------------------------
 # Patch settings (fixed — as Andreas requested)
 # ----------------------------------------------------------
-PATCH_SIZE_PX  = 128      # XY patch size in pixels
-Z_SLICES       = 16       # number of Z slices per patch
-Z_STEP_NM      = 500.0    # Z step in nm (fixed)
+PATCH_SIZE_PX = 128      # XY patch size in pixels
+Z_SLICES      = 16       # number of Z slices per patch
+Z_STEP_NM     = 500.0    # Z step in nm (fixed)
 
 
 # ----------------------------------------------------------
@@ -92,28 +92,28 @@ RES_MAX_NM = 300.0
 # ----------------------------------------------------------
 # Mesh scale
 # ----------------------------------------------------------
-SCALE_TO_NM = 1000.0     # mesh is in µm, convert to nm
+SCALE_TO_NM = 1.0        # sample_004 exported in nm from Blender
 
 
 # ----------------------------------------------------------
 # PSF settings
 # ----------------------------------------------------------
-USE_GAUSSIAN_PSF   = False
-PSF_EM_TIF         = "scripts/psf_bornwolf_488nm_NA1_xy200nm_z500nm_65x65x13.tif"
-LAMBDA_NM          = 488.0
-NA                 = 1.0
-REF_INDEX          = 1.33
+USE_GAUSSIAN_PSF    = False
+PSF_EM_TIF          = "scripts/psf_bornwolf_488nm_NA1_xy200nm_z500nm_65x65x13.tif"
+LAMBDA_NM           = 488.0
+NA                  = 1.0
+REF_INDEX           = 1.33
 GAUSS_PSF_SHAPE_ZYX = (13, 65, 65)
 
 
 # ----------------------------------------------------------
 # Density / labeling settings
 # ----------------------------------------------------------
-LABELING_MODE          = "membrane"
-SPACING_NM             = 200.0
-BATCH_FACES            = 2048
+LABELING_MODE            = "membrane"
+SPACING_NM               = 200.0
+BATCH_FACES              = 2048
 DENSITY_SMOOTH_SIGMA_ZYX = (0.6, 0.8, 0.8)
-DENSITY_NORMALIZE_SUM  = True
+DENSITY_NORMALIZE_SUM    = True
 
 
 # ----------------------------------------------------------
@@ -128,10 +128,7 @@ DENDRITE_MASK_REL_THRESHOLD = 0.2
 # ==========================================================
 
 def volume_to_8bit(vol_tensor):
-    """
-    Normalise a float tensor to [0, 255] uint8 numpy array.
-    8-bit depth as requested by Andreas for training data.
-    """
+    """Normalise float tensor to [0, 255] uint8 numpy array."""
     vol_np = vol_tensor.detach().cpu().numpy().astype(np.float32)
     vmax = vol_np.max()
     if vmax > 0:
@@ -140,38 +137,35 @@ def volume_to_8bit(vol_tensor):
     return (vol_np * 255.0).astype(np.uint8)
 
 
-def mask_to_8bit(mask_tensor):
-    """Convert binary float mask tensor to 8-bit (0 or 255)."""
-    mask_np = mask_tensor.detach().cpu().numpy().astype(np.float32)
+def mask_to_8bit(mask_np):
+    """Convert binary numpy mask to 8-bit (0 or 255)."""
     return ((mask_np > 0).astype(np.uint8) * 255)
 
 
 def save_instance(out_dir, image_8bit, spine_mask_8bit, dendrite_mask_8bit):
     """Save image and masks as 8-bit TIFFs into out_dir."""
     os.makedirs(out_dir, exist_ok=True)
-    tifffile.imwrite(os.path.join(out_dir, "image.tif"),         image_8bit)
-    tifffile.imwrite(os.path.join(out_dir, "spine_mask.tif"),    spine_mask_8bit)
-    tifffile.imwrite(os.path.join(out_dir, "dendrite_mask.tif"), dendrite_mask_8bit)
+    tifffile.imwrite(os.path.join(out_dir, "image.tif"),          image_8bit)
+    tifffile.imwrite(os.path.join(out_dir, "spine_mask.tif"),     spine_mask_8bit)
+    tifffile.imwrite(os.path.join(out_dir, "dendrite_mask.tif"),  dendrite_mask_8bit)
 
 
 def load_psf(xy_um_per_px, z_step_um):
     """Load or generate PSF and ensure odd XY shape."""
     if USE_GAUSSIAN_PSF:
         psf = make_gaussian_psf_matched_zyx(
-            shape_zyx=GAUSS_PSF_SHAPE_ZYX,
-            lambda_nm=LAMBDA_NM,
-            na=NA,
-            n=REF_INDEX,
-            xy_um_per_px=xy_um_per_px,
-            z_step_um=z_step_um,
+            shape_zyx    = GAUSS_PSF_SHAPE_ZYX,
+            lambda_nm    = LAMBDA_NM,
+            na           = NA,
+            n            = REF_INDEX,
+            xy_um_per_px = xy_um_per_px,
+            z_step_um    = z_step_um,
         )
-        psf_tag = "gaussian_matched"
     else:
         psf = load_psf_zyx(PSF_EM_TIF)
-        psf_tag = "bornwolf_fiji"
 
     psf = ensure_psf_odd_xy(psf, renormalize=True, device=device)
-    return psf, psf_tag
+    return psf
 
 
 # ==========================================================
@@ -183,7 +177,7 @@ os.makedirs(OUT_ROOT, exist_ok=True)
 print(f"\nGenerating {NUM_INSTANCES} training instances → {OUT_ROOT}/")
 print(f"Patch size : {PATCH_SIZE_PX}x{PATCH_SIZE_PX} px, {Z_SLICES} Z slices")
 print(f"Resolution : {RES_MIN_NM}–{RES_MAX_NM} nm/px (random per instance)")
-print(f"Labeling   : {LABELING_MODE}")
+print(f"Sample     : {SAMPLE_NAME}  SCALE_TO_NM={SCALE_TO_NM}")
 print("=" * 60)
 
 for idx in range(1, NUM_INSTANCES + 1):
@@ -197,21 +191,21 @@ for idx in range(1, NUM_INSTANCES + 1):
 
     print(f"\n[{idx:04d}/{NUM_INSTANCES}] Generating ...")
 
-    seed = idx  # deterministic seed per instance for reproducibility
+    seed = idx  # deterministic seed per instance
 
     # ----------------------------------------------------------
-    # 1. Generate random transform for this instance
+    # 1. Generate random transform
     # ----------------------------------------------------------
     transform = generate_random_transform(
-        dendrite_path  = DENDRITE_PATH,
-        spine_paths    = SPINE_PATHS,
-        patch_size_px  = PATCH_SIZE_PX,
-        z_slices       = Z_SLICES,
-        res_min_nm     = RES_MIN_NM,
-        res_max_nm     = RES_MAX_NM,
-        z_step_nm      = Z_STEP_NM,
-        scale_to_nm    = SCALE_TO_NM,
-        seed           = seed,
+        dendrite_path = DENDRITE_PATH,
+        spine_paths   = SPINE_PATHS,
+        patch_size_px = PATCH_SIZE_PX,
+        z_slices      = Z_SLICES,
+        res_min_nm    = RES_MIN_NM,
+        res_max_nm    = RES_MAX_NM,
+        z_step_nm     = Z_STEP_NM,
+        scale_to_nm   = SCALE_TO_NM,
+        seed          = seed,
     )
 
     xy_um_per_px      = transform["xy_um_per_px"]
@@ -220,93 +214,105 @@ for idx in range(1, NUM_INSTANCES + 1):
     shape_zyx         = transform["shape_zyx"]
     voxel_size_nm_xyz = transform["voxel_size_nm_xyz"]
 
-    print(f"  XY res : {transform['xy_nm_per_px']:.1f} nm/px  "
-          f"({xy_um_per_px:.4f} µm/px)")
+    print(f"  XY res : {transform['xy_nm_per_px']:.1f} nm/px")
 
     # ----------------------------------------------------------
-    # 2. Load PSF for this instance resolution
+    # 2. Load PSF
     # ----------------------------------------------------------
-    psf_eff, _ = load_psf(xy_um_per_px, z_step_um)
+    psf_eff = load_psf(xy_um_per_px, z_step_um)
 
     # ----------------------------------------------------------
-    # 3. Build dendrite density
+    # 3. Shared density kwargs
     # ----------------------------------------------------------
-    rho_dendrite = build_density_for_mesh(
-        mesh_path              = transform["sim_dendrite_path"],
-        tag                    = "dendrite",
-        labeling_mode          = LABELING_MODE,
-        spacing_nm             = SPACING_NM,
-        origin_nm              = origin_nm,
-        voxel_size_nm_xyz      = voxel_size_nm_xyz,
-        shape_zyx              = shape_zyx,
-        device                 = device,
-        batch_faces            = BATCH_FACES,
+    density_kwargs = dict(
+        labeling_mode            = LABELING_MODE,
+        spacing_nm               = SPACING_NM,
+        origin_nm                = origin_nm,
+        voxel_size_nm_xyz        = voxel_size_nm_xyz,
+        shape_zyx                = shape_zyx,
+        device                   = device,
+        batch_faces              = BATCH_FACES,
         density_smooth_sigma_zyx = DENSITY_SMOOTH_SIGMA_ZYX,
-        density_normalize_sum  = DENSITY_NORMALIZE_SUM,
+        density_normalize_sum    = DENSITY_NORMALIZE_SUM,
     )
 
     # ----------------------------------------------------------
-    # 4. Build spine densities
+    # 4. Build dendrite density
+    # ----------------------------------------------------------
+    rho_dendrite = build_density_for_mesh(
+        mesh_path = transform["sim_dendrite_path"],
+        tag       = "dendrite",
+        **density_kwargs
+    )
+
+    # ----------------------------------------------------------
+    # 5. Build spine densities (one at a time — memory efficient!)
     # ----------------------------------------------------------
     rho_spines = torch.zeros_like(rho_dendrite)
-
     for sp_path in transform["sim_spine_paths"]:
-        rho_sp = build_density_for_mesh(
-            mesh_path              = sp_path,
-            tag                    = "spine",
-            labeling_mode          = LABELING_MODE,
-            spacing_nm             = SPACING_NM,
-            origin_nm              = origin_nm,
-            voxel_size_nm_xyz      = voxel_size_nm_xyz,
-            shape_zyx              = shape_zyx,
-            device                 = device,
-            batch_faces            = BATCH_FACES,
-            density_smooth_sigma_zyx = DENSITY_SMOOTH_SIGMA_ZYX,
-            density_normalize_sum  = DENSITY_NORMALIZE_SUM,
-        )
+        rho_sp     = build_density_for_mesh(sp_path, tag="spine", **density_kwargs)
         rho_spines = rho_spines + rho_sp
+        del rho_sp
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
     rho_all = rho_dendrite + rho_spines
 
     # ----------------------------------------------------------
-    # 5. Render focal stacks
+    # 6. Render + save + delete immediately (memory efficient!)
     # ----------------------------------------------------------
-    vol_dendrite = render_density(rho_dendrite, psf_eff, "dendrite", device)
-    vol_spines   = render_density(rho_spines,   psf_eff, "spines",   device)
-    vol_all      = render_density(rho_all,       psf_eff, "all",      device)
 
-    # ----------------------------------------------------------
-    # 6. Create masks
-    # ----------------------------------------------------------
-    spine_mask, dendrite_mask = create_masks(
-        vol_spines,
-        vol_dendrite,
-        spine_threshold_rel    = SPINE_MASK_REL_THRESHOLD,
-        dendrite_threshold_rel = DENDRITE_MASK_REL_THRESHOLD,
-    )
-
-    # ----------------------------------------------------------
-    # 7. Convert to 8-bit and save
-    # ----------------------------------------------------------
-    image_8bit        = volume_to_8bit(vol_all)
-    spine_mask_8bit   = mask_to_8bit(spine_mask)
-    dendrite_mask_8bit = mask_to_8bit(dendrite_mask)
-
-    save_instance(instance_dir, image_8bit, spine_mask_8bit, dendrite_mask_8bit)
-
-    print(f"  Saved  → {instance_dir}/")
-
-    # ----------------------------------------------------------
-    # 8. Cleanup
-    # ----------------------------------------------------------
-    cleanup_temp_meshes(transform)
-
-    del rho_dendrite, rho_spines, rho_all
-    del vol_dendrite, vol_spines, vol_all
-    del spine_mask, dendrite_mask, psf_eff
-
+    # Combined image
+    vol_all = render_density(rho_all, psf_eff, "all", device)
+    del rho_all
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    image_8bit = volume_to_8bit(vol_all)
+    del vol_all
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-print("\nDone! Generated", NUM_INSTANCES, "training instances.")
+    # Spine mask
+    vol_spines = render_density(rho_spines, psf_eff, "spines", device)
+    del rho_spines
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    spine_max    = float(vol_spines.max().item())
+    spine_thresh = SPINE_MASK_REL_THRESHOLD * spine_max if spine_max > 0 else 0.0
+    spine_mask_8bit = mask_to_8bit(
+        (vol_spines > spine_thresh).detach().cpu().numpy()
+    )
+    del vol_spines
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    # Dendrite mask
+    vol_dendrite = render_density(rho_dendrite, psf_eff, "dendrite", device)
+    del rho_dendrite
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    dendrite_max    = float(vol_dendrite.max().item())
+    dendrite_thresh = DENDRITE_MASK_REL_THRESHOLD * dendrite_max if dendrite_max > 0 else 0.0
+    dendrite_mask_8bit = mask_to_8bit(
+        (vol_dendrite > dendrite_thresh).detach().cpu().numpy()
+    )
+    del vol_dendrite
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    # ----------------------------------------------------------
+    # 7. Save instance
+    # ----------------------------------------------------------
+    save_instance(instance_dir, image_8bit, spine_mask_8bit, dendrite_mask_8bit)
+    print(f"  Saved  → {instance_dir}/")
+
+    # ----------------------------------------------------------
+    # 8. Cleanup temp meshes + GPU memory
+    # ----------------------------------------------------------
+    cleanup_temp_meshes(transform)
+    del psf_eff
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+print(f"\nDone! Generated {NUM_INSTANCES} training instances.")
 print(f"Output folder: {OUT_ROOT}/")
