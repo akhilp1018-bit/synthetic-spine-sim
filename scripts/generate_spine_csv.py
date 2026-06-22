@@ -21,6 +21,7 @@ CSV columns:
 
 import sys
 import os
+import re
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import numpy as np
@@ -38,20 +39,29 @@ EXP_TAG     = "xy200_z500_spacing200"
 INPUT_DIR   = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"
 OUTPUT_CSV  = os.path.join(INPUT_DIR, "spine_annotations.csv")
 
-# Spine mask file pattern
-SPINE_MASK_PATTERN = f"zstack_{SAMPLE_NAME}_membrane_bornwolf_fiji_{EXP_TAG}_spine{{i}}_mask.tif"
+# Combined spine mask filename to exclude
+COMBINED_SPINE_MASK = f"zstack_{SAMPLE_NAME}_membrane_bornwolf_fiji_{EXP_TAG}_spine_mask.tif"
 
 # ==========================================================
-# Find all spine masks
+# Find all INDIVIDUAL spine masks (sorted numerically)
 # ==========================================================
 
-spine_files = sorted([
-    f for f in os.listdir(INPUT_DIR)
-    if "spine" in f and "mask" in f and "dendrite" not in f and "spines" not in f
-])
+all_files = os.listdir(INPUT_DIR)
 
-print(f"Found {len(spine_files)} spine mask files in {INPUT_DIR}")
+spine_files = []
+for f in all_files:
+    # Must have spine + number + mask pattern
+    if re.search(r'spine\d+_mask\.tif$', f):
+        # Exclude combined spine mask
+        if f != COMBINED_SPINE_MASK:
+            spine_files.append(f)
+
+# Sort numerically by spine number
+spine_files = sorted(spine_files, key=lambda x: int(re.search(r'spine(\d+)_mask', x).group(1)))
+
+print(f"Found {len(spine_files)} individual spine mask files in {INPUT_DIR}")
 print(f"First few: {spine_files[:3]}")
+print(f"Last few : {spine_files[-3:]}")
 
 # ==========================================================
 # Compute center of mass for each spine
@@ -79,14 +89,18 @@ for idx, fname in enumerate(spine_files):
     y_com = float(com[1])  # Y
     x_com = float(com[2])  # X
 
+    # Get spine number from filename
+    spine_num = int(re.search(r'spine(\d+)_mask', fname).group(1))
+
     records.append({
-        "label": idx,
-        "X"    : x_com,
-        "Y"    : y_com,
-        "Pos"  : z_pos,
+        "label"      : idx,
+        "spine_num"  : spine_num,
+        "X"          : x_com,
+        "Y"          : y_com,
+        "Pos"        : z_pos,
     })
 
-    print(f"  Spine {idx+1:3d} ({fname}): X={x_com:.1f}, Y={y_com:.1f}, Z={z_pos:.1f}")
+    print(f"  Spine {spine_num:3d} : X={x_com:.1f}, Y={y_com:.1f}, Z={z_pos:.1f}")
 
 # ==========================================================
 # Save CSV
@@ -95,5 +109,7 @@ for idx, fname in enumerate(spine_files):
 df = pd.DataFrame(records)
 df.to_csv(OUTPUT_CSV, index=False)
 
-print(f"\nSaved {len(records)} spine centers to: {OUTPUT_CSV}")
+print(f"\n{'='*50}")
+print(f"Saved {len(records)} spine centers to: {OUTPUT_CSV}")
+print(f"{'='*50}")
 print(df.head(10))
