@@ -11,6 +11,7 @@ def save_stack_imagej_zyx_u16(
 ) -> str:
     """
     Save a uint16 ZYX stack as ImageJ-compatible TIFF with spacing metadata.
+    Uses zlib compression to reduce file size (~100x smaller for binary masks).
     Returns the saved TIFF path.
     """
     os.makedirs(out_dir, exist_ok=True)
@@ -20,6 +21,7 @@ def save_stack_imagej_zyx_u16(
         tiff_path,
         stack_u16_zyx,
         imagej=True,
+        compression='zlib',       # ← compress! binary masks ~100x smaller
         resolution=(1.0 / xy_um_per_px, 1.0 / xy_um_per_px),
         metadata={"axes": "ZYX", "spacing": z_step_um, "unit": "um"},
     )
