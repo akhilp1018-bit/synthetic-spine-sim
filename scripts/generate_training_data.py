@@ -70,7 +70,7 @@ print(f"Spines   : {len(SPINE_PATHS)} found")
 # Output
 # ----------------------------------------------------------
 OUT_ROOT      = "training_data"
-NUM_INSTANCES = 5        # ← change to 1000 for full run
+NUM_INSTANCES = 1000       # ← change to 1000 for full run
 
 # ----------------------------------------------------------
 # Patch settings
