@@ -94,6 +94,7 @@ for idx, fname in enumerate(spine_files):
 
     records.append({
         "label"      : idx,
+        "Rater"      : "A",    # single rater
         "spine_num"  : spine_num,
         "X"          : x_com,
         "Y"          : y_com,
