@@ -11,7 +11,8 @@ Each instance consists of:
 Randomisation per instance:
   - Random 3D rotation of all meshes
   - Random XY resolution (60-300 nm/px)
-  - Random translation (mesh placed randomly in FOV)
+  - Random crop along dendrite (FOV centered on random dendrite section)
+  - Only spines inside the FOV are rendered
 
 Usage
 -----
@@ -24,7 +25,6 @@ Output
     │   ├── image.tif
     │   ├── spine_mask.tif
     │   └── dendrite_mask.tif
-    ├── instance_0002/
     ...
     └── instance_1000/
 """
@@ -50,7 +50,7 @@ print("Using device:", device)
 
 
 # ==========================================================
-# Settings — change these for your sample
+# Settings
 # ==========================================================
 
 SAMPLE_NAME   = "sample_004"
@@ -66,34 +66,29 @@ SPINE_PATHS   = sorted([
 print(f"Dendrite : {DENDRITE_PATH}")
 print(f"Spines   : {len(SPINE_PATHS)} found")
 
-
 # ----------------------------------------------------------
 # Output
 # ----------------------------------------------------------
 OUT_ROOT      = "training_data"
-NUM_INSTANCES = 5        # ← start with 5 for testing, change to 1000 for full run
-
-
-# ----------------------------------------------------------
-# Patch settings (fixed — as Andreas requested)
-# ----------------------------------------------------------
-PATCH_SIZE_PX = 128      # XY patch size in pixels
-Z_SLICES      = 16       # number of Z slices per patch
-Z_STEP_NM     = 500.0    # Z step in nm (fixed)
-
+NUM_INSTANCES = 5        # ← change to 1000 for full run
 
 # ----------------------------------------------------------
-# Random resolution range (Andreas: 60-300 nm XY)
+# Patch settings
+# ----------------------------------------------------------
+PATCH_SIZE_PX = 128
+Z_SLICES      = 16
+Z_STEP_NM     = 500.0
+
+# ----------------------------------------------------------
+# Random resolution range
 # ----------------------------------------------------------
 RES_MIN_NM = 60.0
 RES_MAX_NM = 300.0
 
-
 # ----------------------------------------------------------
 # Mesh scale
 # ----------------------------------------------------------
-SCALE_TO_NM = 1.0        # sample_004 exported in nm from Blender
-
+SCALE_TO_NM = 1.0        # sample_004 exported in nm
 
 # ----------------------------------------------------------
 # PSF settings
@@ -105,9 +100,8 @@ NA                  = 1.0
 REF_INDEX           = 1.33
 GAUSS_PSF_SHAPE_ZYX = (13, 65, 65)
 
-
 # ----------------------------------------------------------
-# Density / labeling settings
+# Density settings
 # ----------------------------------------------------------
 LABELING_MODE            = "membrane"
 SPACING_NM               = 200.0
@@ -115,12 +109,16 @@ BATCH_FACES              = 2048
 DENSITY_SMOOTH_SIGMA_ZYX = (0.6, 0.8, 0.8)
 DENSITY_NORMALIZE_SUM    = True
 
-
 # ----------------------------------------------------------
 # Mask thresholds
 # ----------------------------------------------------------
 SPINE_MASK_REL_THRESHOLD    = 0.2
 DENDRITE_MASK_REL_THRESHOLD = 0.2
+
+# ----------------------------------------------------------
+# Skip instances with no spines in FOV
+# ----------------------------------------------------------
+MIN_SPINES_IN_FOV = 1   # skip instance if fewer spines in FOV
 
 
 # ==========================================================
@@ -128,7 +126,6 @@ DENDRITE_MASK_REL_THRESHOLD = 0.2
 # ==========================================================
 
 def volume_to_8bit(vol_tensor):
-    """Normalise float tensor to [0, 255] uint8 numpy array."""
     vol_np = vol_tensor.detach().cpu().numpy().astype(np.float32)
     vmax = vol_np.max()
     if vmax > 0:
@@ -138,12 +135,10 @@ def volume_to_8bit(vol_tensor):
 
 
 def mask_to_8bit(mask_np):
-    """Convert binary numpy mask to 8-bit (0 or 255)."""
     return ((mask_np > 0).astype(np.uint8) * 255)
 
 
 def save_instance(out_dir, image_8bit, spine_mask_8bit, dendrite_mask_8bit):
-    """Save image and masks as 8-bit TIFFs into out_dir."""
     os.makedirs(out_dir, exist_ok=True)
     tifffile.imwrite(os.path.join(out_dir, "image.tif"),          image_8bit)
     tifffile.imwrite(os.path.join(out_dir, "spine_mask.tif"),     spine_mask_8bit)
@@ -151,21 +146,15 @@ def save_instance(out_dir, image_8bit, spine_mask_8bit, dendrite_mask_8bit):
 
 
 def load_psf(xy_um_per_px, z_step_um):
-    """Load or generate PSF and ensure odd XY shape."""
     if USE_GAUSSIAN_PSF:
         psf = make_gaussian_psf_matched_zyx(
-            shape_zyx    = GAUSS_PSF_SHAPE_ZYX,
-            lambda_nm    = LAMBDA_NM,
-            na           = NA,
-            n            = REF_INDEX,
-            xy_um_per_px = xy_um_per_px,
-            z_step_um    = z_step_um,
+            shape_zyx=GAUSS_PSF_SHAPE_ZYX,
+            lambda_nm=LAMBDA_NM, na=NA, n=REF_INDEX,
+            xy_um_per_px=xy_um_per_px, z_step_um=z_step_um,
         )
     else:
         psf = load_psf_zyx(PSF_EM_TIF)
-
-    psf = ensure_psf_odd_xy(psf, renormalize=True, device=device)
-    return psf
+    return ensure_psf_odd_xy(psf, renormalize=True, device=device)
 
 
 # ==========================================================
@@ -175,26 +164,28 @@ def load_psf(xy_um_per_px, z_step_um):
 os.makedirs(OUT_ROOT, exist_ok=True)
 
 print(f"\nGenerating {NUM_INSTANCES} training instances → {OUT_ROOT}/")
-print(f"Patch size : {PATCH_SIZE_PX}x{PATCH_SIZE_PX} px, {Z_SLICES} Z slices")
-print(f"Resolution : {RES_MIN_NM}–{RES_MAX_NM} nm/px (random per instance)")
-print(f"Sample     : {SAMPLE_NAME}  SCALE_TO_NM={SCALE_TO_NM}")
+print(f"Patch     : {PATCH_SIZE_PX}x{PATCH_SIZE_PX} px, {Z_SLICES} Z slices")
+print(f"Resolution: {RES_MIN_NM}-{RES_MAX_NM} nm/px")
+print(f"Sample    : {SAMPLE_NAME}  SCALE_TO_NM={SCALE_TO_NM}")
 print("=" * 60)
 
-for idx in range(1, NUM_INSTANCES + 1):
+generated = 0
+attempt   = 0
 
-    instance_dir = os.path.join(OUT_ROOT, f"instance_{idx:04d}")
+while generated < NUM_INSTANCES:
+    attempt += 1
+    instance_dir = os.path.join(OUT_ROOT, f"instance_{generated+1:04d}")
 
-    # Skip already completed instances (resume support)
+    # Skip already completed
     if os.path.exists(os.path.join(instance_dir, "image.tif")):
-        print(f"[{idx:04d}/{NUM_INSTANCES}] Already exists, skipping.")
+        print(f"[{generated+1:04d}/{NUM_INSTANCES}] Already exists, skipping.")
+        generated += 1
         continue
 
-    print(f"\n[{idx:04d}/{NUM_INSTANCES}] Generating ...")
-
-    seed = idx  # deterministic seed per instance
+    seed = attempt  # unique seed per attempt
 
     # ----------------------------------------------------------
-    # 1. Generate random transform
+    # 1. Generate random transform with FOV filtering
     # ----------------------------------------------------------
     transform = generate_random_transform(
         dendrite_path = DENDRITE_PATH,
@@ -208,13 +199,21 @@ for idx in range(1, NUM_INSTANCES + 1):
         seed          = seed,
     )
 
+    # Skip if not enough spines in FOV
+    if len(transform["sim_spine_paths"]) < MIN_SPINES_IN_FOV:
+        print(f"  [attempt {attempt}] No spines in FOV — retrying...")
+        cleanup_temp_meshes(transform)
+        continue
+
+    print(f"\n[{generated+1:04d}/{NUM_INSTANCES}] attempt={attempt} "
+          f"XY={transform['xy_nm_per_px']:.0f}nm "
+          f"spines_in_fov={len(transform['sim_spine_paths'])}")
+
     xy_um_per_px      = transform["xy_um_per_px"]
     z_step_um         = transform["z_step_um"]
     origin_nm         = transform["origin_nm"]
     shape_zyx         = transform["shape_zyx"]
     voxel_size_nm_xyz = transform["voxel_size_nm_xyz"]
-
-    print(f"  XY res : {transform['xy_nm_per_px']:.1f} nm/px")
 
     # ----------------------------------------------------------
     # 2. Load PSF
@@ -240,13 +239,11 @@ for idx in range(1, NUM_INSTANCES + 1):
     # 4. Build dendrite density
     # ----------------------------------------------------------
     rho_dendrite = build_density_for_mesh(
-        mesh_path = transform["sim_dendrite_path"],
-        tag       = "dendrite",
-        **density_kwargs
+        transform["sim_dendrite_path"], tag="dendrite", **density_kwargs
     )
 
     # ----------------------------------------------------------
-    # 5. Build spine densities (one at a time — memory efficient!)
+    # 5. Build spine densities (only FOV spines, one at a time)
     # ----------------------------------------------------------
     rho_spines = torch.zeros_like(rho_dendrite)
     for sp_path in transform["sim_spine_paths"]:
@@ -259,11 +256,11 @@ for idx in range(1, NUM_INSTANCES + 1):
     rho_all = rho_dendrite + rho_spines
 
     # ----------------------------------------------------------
-    # 6. Render + save + delete immediately (memory efficient!)
+    # 6. Render + save + delete immediately
     # ----------------------------------------------------------
 
     # Combined image
-    vol_all = render_density(rho_all, psf_eff, "all", device)
+    vol_all    = render_density(rho_all, psf_eff, "all", device)
     del rho_all
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -273,7 +270,7 @@ for idx in range(1, NUM_INSTANCES + 1):
         torch.cuda.empty_cache()
 
     # Spine mask
-    vol_spines = render_density(rho_spines, psf_eff, "spines", device)
+    vol_spines   = render_density(rho_spines, psf_eff, "spines", device)
     del rho_spines
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -287,7 +284,7 @@ for idx in range(1, NUM_INSTANCES + 1):
         torch.cuda.empty_cache()
 
     # Dendrite mask
-    vol_dendrite = render_density(rho_dendrite, psf_eff, "dendrite", device)
+    vol_dendrite    = render_density(rho_dendrite, psf_eff, "dendrite", device)
     del rho_dendrite
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -304,15 +301,17 @@ for idx in range(1, NUM_INSTANCES + 1):
     # 7. Save instance
     # ----------------------------------------------------------
     save_instance(instance_dir, image_8bit, spine_mask_8bit, dendrite_mask_8bit)
-    print(f"  Saved  → {instance_dir}/")
+    print(f"  Saved → {instance_dir}/")
 
     # ----------------------------------------------------------
-    # 8. Cleanup temp meshes + GPU memory
+    # 8. Cleanup
     # ----------------------------------------------------------
     cleanup_temp_meshes(transform)
     del psf_eff
     if device.type == "cuda":
         torch.cuda.empty_cache()
+
+    generated += 1
 
 print(f"\nDone! Generated {NUM_INSTANCES} training instances.")
 print(f"Output folder: {OUT_ROOT}/")
