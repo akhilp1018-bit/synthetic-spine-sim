@@ -33,7 +33,7 @@ from scipy.ndimage import maximum_filter, gaussian_filter
 # SETTINGS
 # ==========================================================
 
-SAMPLE_NAME = "sample_004"
+SAMPLE_NAME = "sample_001"
 EXP_TAG     = "xy94_z500_spacing100"
 
 BASE_DIR   = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"
@@ -76,8 +76,14 @@ image_max = image.max(axis=0)
 mask_max  = (spine_mask > 0).max(axis=0).astype(np.float32)
 prob_max  = prob_raw.max(axis=0)
 
+
+
 # Normalize image for display
 image_norm = image_max / image_max.max()
+#To increase brightness
+#p2, p99 = np.percentile(image_max, (2, 99.5))
+#image_norm = np.clip((image_max - p2) / (p99 - p2), 0, 1)
+#image_norm = image_norm ** 1.5
 
 # Load GT centers
 gt_df      = pd.read_csv(GT_CSV, index_col=0)
