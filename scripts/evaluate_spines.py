@@ -20,7 +20,7 @@ from scipy.ndimage import maximum_filter, gaussian_filter
 # SETTINGS
 # ==========================================================
 
-SAMPLE_NAME = "sample_004"
+SAMPLE_NAME = "sample_001"
 EXP_TAG     = "xy94_z500_spacing100"
 
 BASE_DIR    = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"

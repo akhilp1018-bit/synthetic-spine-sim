@@ -11,7 +11,7 @@ from scipy.ndimage import gaussian_filter, maximum_filter
 # SETTINGS
 # ==========================================================
 
-SAMPLE_NAME = "sample_004"
+SAMPLE_NAME = "sample_001"
 EXP_TAG = "xy94_z500_spacing100"
 
 BASE_DIR = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"
@@ -222,7 +222,7 @@ plt.title(
 plt.legend()
 plt.tight_layout()
 
-xy_out = os.path.join(OUT_DIR, "andreas_style_xy_matching.png")
+xy_out = os.path.join(OUT_DIR, "xy_matching.png")
 plt.savefig(xy_out, dpi=200)
 plt.close()
 
@@ -283,7 +283,7 @@ plt.title(
 plt.legend()
 plt.tight_layout()
 
-xz_out = os.path.join(OUT_DIR, "andreas_style_xz_matching.png")
+xz_out = os.path.join(OUT_DIR, "xz_matching.png")
 plt.savefig(xz_out, dpi=200)
 plt.close()
 
@@ -330,7 +330,7 @@ for i in range(labels_avg.shape[0]):
 
 match_df = pd.DataFrame(rows)
 
-csv_out = os.path.join(OUT_DIR, "andreas_style_matching_results.csv")
+csv_out = os.path.join(OUT_DIR, "matching_results.csv")
 match_df.to_csv(csv_out, index=False)
 
 print(f"Saved matching table: {csv_out}")
