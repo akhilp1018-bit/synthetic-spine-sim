@@ -77,6 +77,8 @@ mask_max  = (spine_mask > 0).max(axis=0).astype(np.float32)
 prob_max  = prob_raw.max(axis=0)
 
 # Normalize image for display
+p2, p99 = np.percentile(image_max, (2, 99.5))
+image_norm = np.clip((image_max - p2) / (p99 - p2), 0, 1)
 image_norm = image_max / image_max.max()
 
 # Load GT centers
@@ -128,7 +130,7 @@ axes[3].set_title("GT vs Predicted\nSpine Centers", fontsize=12)
 axes[3].legend(fontsize=9, loc='upper right')
 axes[3].axis('off')
 
-plt.suptitle(f"Synthetic Spine Simulation Pipeline — {SAMPLE_NAME} at 94nm/500nm", fontsize=14)
+plt.suptitle(f"Synthetic Spine Simulation Pipeline — {SAMPLE_NAME} at 94nm/500nm", fontsize=14, y=1.05)
 plt.tight_layout()
 plt.savefig(os.path.join(OUT_DIR, "pipeline_visualization.png"), dpi=150, bbox_inches='tight')
 print("Saved: pipeline_visualization.png")
@@ -176,7 +178,7 @@ axes[3].set_title("GT vs Predicted\n(zoomed)", fontsize=12)
 axes[3].legend(fontsize=9)
 axes[3].axis('off')
 
-plt.suptitle(f"Zoomed View — {SAMPLE_NAME} at 94nm/500nm", fontsize=14)
+plt.suptitle(f"Zoomed View — {SAMPLE_NAME} at 94nm/500nm", fontsize=14, y=1.05)
 plt.tight_layout()
 plt.savefig(os.path.join(OUT_DIR, "pipeline_visualization_zoom.png"), dpi=150, bbox_inches='tight')
 print("Saved: pipeline_visualization_zoom.png")
