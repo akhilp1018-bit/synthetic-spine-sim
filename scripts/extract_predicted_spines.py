@@ -4,11 +4,6 @@ extract_predicted_spines.py
 Extract predicted spine center locations from DeepD3 spine
 probability map using local maxima detection.
 
-Uses local maxima instead of binary threshold to:
-- Find each spine individually even if close together
-- Preserve confidence score (probability value at peak)
-- Enable PR curve evaluation by sweeping confidence threshold
-
 Usage
 -----
     python scripts/extract_predicted_spines.py
@@ -40,15 +35,15 @@ BASE_DIR    = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"
 EXPORT_DIR  = os.path.join(BASE_DIR, "deepd3_exports")
 
 # Local maxima detection settings
-# Neighbourhood size for local maxima detection (Z, Y, X) in voxels
-NEIGHBORHOOD_ZYX = (3, 5, 5)
+# Larger neighborhood → fewer peaks → better precision
+NEIGHBORHOOD_ZYX = (5, 9, 9)
 
-# Minimum probability to consider as a spine peak (0-65535 scale)
-# 0.1 probability = 65535 * 0.1 = 6553
-MIN_PROBABILITY = 6553
+# Higher threshold → fewer false positives
+# 0.5 probability = 65535 * 0.5 = 32767
+MIN_PROBABILITY = 32767
 
-# Optional: smooth probability map before finding peaks
-SMOOTH_SIGMA = 1.0   # set to 0 to skip smoothing
+# Smoothing before finding peaks
+SMOOTH_SIGMA = 1.0
 
 # Models to process
 MODELS = {
@@ -74,21 +69,20 @@ for model_name, prob_path in MODELS.items():
     print(f"  Shape : {prob.shape}")
     print(f"  Range : {prob.min():.0f} - {prob.max():.0f}")
 
-    # Optional smoothing
+    # Smooth
     if SMOOTH_SIGMA > 0:
         prob = gaussian_filter(prob, sigma=SMOOTH_SIGMA)
         print(f"  Smoothed with sigma={SMOOTH_SIGMA}")
 
     # Find local maxima
-    # A voxel is a local maximum if it equals the max in its neighborhood
     local_max = maximum_filter(prob, size=NEIGHBORHOOD_ZYX)
     is_peak   = (prob == local_max) & (prob > MIN_PROBABILITY)
 
-    # Get peak coordinates and confidence scores
-    peak_coords = np.argwhere(is_peak)  # shape (N, 3) — Z, Y, X
-    peak_scores = prob[is_peak]          # probability at each peak
+    # Get peak coordinates and scores
+    peak_coords = np.argwhere(is_peak)
+    peak_scores = prob[is_peak]
 
-    print(f"  Found {len(peak_coords)} peaks above threshold {MIN_PROBABILITY}")
+    print(f"  Found {len(peak_coords)} peaks above threshold {MIN_PROBABILITY} ({MIN_PROBABILITY/65535*100:.0f}% probability)")
 
     # Save as CSV
     records = []
@@ -100,10 +94,10 @@ for model_name, prob_path in MODELS.items():
             "X"          : float(x),
             "Y"          : float(y),
             "Pos"        : float(z),
-            "confidence" : float(score),  # raw probability value
+            "confidence" : float(score),
         })
 
-    # Sort by confidence (highest first)
+    # Sort by confidence
     records = sorted(records, key=lambda r: r["confidence"], reverse=True)
     for i, r in enumerate(records):
         r["label"] = i
@@ -113,7 +107,7 @@ for model_name, prob_path in MODELS.items():
     df.to_csv(out_csv, index=False)
 
     print(f"  Saved : {out_csv}")
-    print(f"  Top 5 predictions:")
+    print(f"  Top 5:")
     print(df.head(5).to_string(index=False))
 
 print("\nDone!")
