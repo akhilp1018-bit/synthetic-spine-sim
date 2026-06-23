@@ -2,14 +2,12 @@
 extract_predicted_spines.py
 ----------------------------
 Extract predicted spine center locations from DeepD3 spine
-probability map for evaluation against ground truth.
+probability map using local maxima detection.
 
-Steps:
-1. Load DeepD3 spine probability TIFF
-2. Threshold to get binary mask
-3. Find connected components (each = one predicted spine)
-4. Compute center of mass for each component
-5. Save as CSV matching spine_annotations.csv format
+Uses local maxima instead of binary threshold to:
+- Find each spine individually even if close together
+- Preserve confidence score (probability value at peak)
+- Enable PR curve evaluation by sweeping confidence threshold
 
 Usage
 -----
@@ -29,7 +27,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 import pandas as pd
 import tifffile
-from scipy import ndimage
+from scipy.ndimage import maximum_filter, gaussian_filter
 
 # ==========================================================
 # SETTINGS
@@ -41,12 +39,16 @@ EXP_TAG     = "xy94_z500_spacing100"
 BASE_DIR    = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"
 EXPORT_DIR  = os.path.join(BASE_DIR, "deepd3_exports")
 
-# Threshold for spine probability map (0-65535 scale)
-# 0.5 probability = 65535 * 0.5 = 32767
-THRESHOLD = 32767
+# Local maxima detection settings
+# Neighbourhood size for local maxima detection (Z, Y, X) in voxels
+NEIGHBORHOOD_ZYX = (3, 5, 5)
 
-# Minimum voxels for a connected component to be counted as a spine
-MIN_COMPONENT_SIZE = 10
+# Minimum probability to consider as a spine peak (0-65535 scale)
+# 0.1 probability = 65535 * 0.1 = 6553
+MIN_PROBABILITY = 6553
+
+# Optional: smooth probability map before finding peaks
+SMOOTH_SIGMA = 1.0   # set to 0 to skip smoothing
 
 # Models to process
 MODELS = {
@@ -56,7 +58,7 @@ MODELS = {
 
 
 # ==========================================================
-# Extract predicted spine centers
+# Extract predicted spine centers using local maxima
 # ==========================================================
 
 for model_name, prob_path in MODELS.items():
@@ -69,51 +71,49 @@ for model_name, prob_path in MODELS.items():
 
     # Load probability map
     prob = tifffile.imread(prob_path).astype(np.float32)
-    print(f"  Shape: {prob.shape}  min={prob.min():.0f}  max={prob.max():.0f}")
+    print(f"  Shape : {prob.shape}")
+    print(f"  Range : {prob.min():.0f} - {prob.max():.0f}")
 
-    # Threshold to binary mask
-    binary = (prob > THRESHOLD).astype(np.uint8)
-    print(f"  Thresholded at {THRESHOLD} → {binary.sum()} voxels above threshold")
+    # Optional smoothing
+    if SMOOTH_SIGMA > 0:
+        prob = gaussian_filter(prob, sigma=SMOOTH_SIGMA)
+        print(f"  Smoothed with sigma={SMOOTH_SIGMA}")
 
-    # Find connected components
-    labeled, num_components = ndimage.label(binary)
-    print(f"  Found {num_components} connected components")
+    # Find local maxima
+    # A voxel is a local maximum if it equals the max in its neighborhood
+    local_max = maximum_filter(prob, size=NEIGHBORHOOD_ZYX)
+    is_peak   = (prob == local_max) & (prob > MIN_PROBABILITY)
 
-    # Compute center of mass for each component
+    # Get peak coordinates and confidence scores
+    peak_coords = np.argwhere(is_peak)  # shape (N, 3) — Z, Y, X
+    peak_scores = prob[is_peak]          # probability at each peak
+
+    print(f"  Found {len(peak_coords)} peaks above threshold {MIN_PROBABILITY}")
+
+    # Save as CSV
     records = []
-    skipped = 0
-
-    for i in range(1, num_components + 1):
-        component = (labeled == i)
-        size = int(component.sum())
-
-        # Skip tiny components (noise)
-        if size < MIN_COMPONENT_SIZE:
-            skipped += 1
-            continue
-
-        # Center of mass (Z, Y, X)
-        com = ndimage.center_of_mass(component)
-        z_pos = float(com[0])
-        y_com = float(com[1])
-        x_com = float(com[2])
-
+    for i, (coord, score) in enumerate(zip(peak_coords, peak_scores)):
+        z, y, x = coord
         records.append({
-            "label"    : len(records),
-            "Rater"    : "DeepD3",
-            "X"        : x_com,
-            "Y"        : y_com,
-            "Pos"      : z_pos,
-            "size_vox" : size,
+            "label"      : i,
+            "Rater"      : "DeepD3",
+            "X"          : float(x),
+            "Y"          : float(y),
+            "Pos"        : float(z),
+            "confidence" : float(score),  # raw probability value
         })
 
-    print(f"  Valid spines: {len(records)}  (skipped {skipped} small components)")
+    # Sort by confidence (highest first)
+    records = sorted(records, key=lambda r: r["confidence"], reverse=True)
+    for i, r in enumerate(records):
+        r["label"] = i
 
-    # Save CSV
     df = pd.DataFrame(records)
     out_csv = os.path.join(EXPORT_DIR, f"{model_name}_predicted_spines.csv")
     df.to_csv(out_csv, index=False)
-    print(f"  Saved: {out_csv}")
-    print(df.head(5))
+
+    print(f"  Saved : {out_csv}")
+    print(f"  Top 5 predictions:")
+    print(df.head(5).to_string(index=False))
 
 print("\nDone!")
