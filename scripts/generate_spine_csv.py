@@ -33,8 +33,8 @@ from scipy import ndimage
 # SETTINGS — change these for each sample
 # ==========================================================
 
-SAMPLE_NAME = "sample_001"
-EXP_TAG     = "xy200_z500_spacing200"
+SAMPLE_NAME = "sample_004"
+EXP_TAG     = "xy94_z500_spacing100"
 
 INPUT_DIR   = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"
 OUTPUT_CSV  = os.path.join(INPUT_DIR, "spine_annotations.csv")
