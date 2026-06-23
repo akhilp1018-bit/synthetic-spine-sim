@@ -77,8 +77,6 @@ mask_max  = (spine_mask > 0).max(axis=0).astype(np.float32)
 prob_max  = prob_raw.max(axis=0)
 
 # Normalize image for display
-p2, p99 = np.percentile(image_max, (2, 99.5))
-image_norm = np.clip((image_max - p2) / (p99 - p2), 0, 1)
 image_norm = image_max / image_max.max()
 
 # Load GT centers
