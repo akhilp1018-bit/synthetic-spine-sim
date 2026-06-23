@@ -30,7 +30,7 @@ import tifffile
 # SETTINGS — update for each sample/experiment
 # ==========================================================
 
-SAMPLE_NAME = "sample_004"
+SAMPLE_NAME = "sample_001"
 EXP_TAG     = "xy94_z500_spacing100"
 
 BASE_DIR = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"
