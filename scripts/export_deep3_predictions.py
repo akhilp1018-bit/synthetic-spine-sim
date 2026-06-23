@@ -37,7 +37,7 @@ BASE_DIR = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"
 OUT_DIR  = os.path.join(BASE_DIR, "deepd3_exports")
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# Prediction files — update filenames if renamed after prediction
+# Prediction files
 PRED_FILES = {
     "32F": os.path.join(
         BASE_DIR,
@@ -56,14 +56,19 @@ PRED_FILES = {
 
 def save_u16_tif(path, arr):
     """
-    Save probability map as uint16 TIFF.
+    Save probability map as uint16 TIFF with zlib compression.
     DeepD3 outputs [0, 1] floats → scaled to [0, 65535] uint16.
-    Preserves continuous probability values for thresholding in Fiji.
+    Compression reduces file size ~10-50x (938MB → ~20-50MB).
     """
     arr = arr.astype(np.float32)
     arr = np.clip(arr, 0, 1)
     arr_u16 = (arr * 65535).astype(np.uint16)
-    tifffile.imwrite(path, arr_u16, imagej=True)
+    tifffile.imwrite(
+        path,
+        arr_u16,
+        imagej=True,
+        compression='zlib',   # ← compress! much smaller files
+    )
     print(f"  Saved : {path}  shape={arr_u16.shape}")
 
 
