@@ -21,7 +21,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 STACK_PATH = os.path.join(
     BASE_DIR,
-    f"zstack_{SAMPLE_NAME}_membrane_bornwolf_fiji_{EXP_TAG}.tif"
+    f"zstack_{SAMPLE_NAME}_membrane_bornwolf_fiji_{EXP_TAG}_image.tif"
 )
 
 GT_CSV = os.path.join(BASE_DIR, "spine_annotations.csv")
