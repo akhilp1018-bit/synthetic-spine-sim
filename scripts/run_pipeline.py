@@ -60,7 +60,7 @@ print("Using device:", device)
 # SETTINGS — change these for each sample/experiment
 # ==========================================================
 
-SAMPLE_NAME   = "sample_001"
+SAMPLE_NAME   = "sample_004"
 BASE_DIR      = f"neuron/{SAMPLE_NAME}"
 
 DENDRITE_PATH = os.path.join(BASE_DIR, "dendrite00.ply")
@@ -104,7 +104,7 @@ EXPERIMENTS = [
 # ----------------------------------------------------------
 # Mesh preprocessing
 # ----------------------------------------------------------
-SCALE_TO_NM = 1000000      # mesh exported in nm from Blender
+SCALE_TO_NM = 1     # mesh exported in nm from Blender
 RECENTER    = False   # keep False for aligned submeshes
 
 
@@ -112,7 +112,8 @@ RECENTER    = False   # keep False for aligned submeshes
 # PSF / Imaging model
 # ----------------------------------------------------------
 USE_GAUSSIAN_PSF    = False
-PSF_EM_TIF          = "scripts/psf_bornwolf_488nm_NA1_xy200nm_z500nm_65x65x13.tif"
+PSF_EM_TIF          = "scripts/psf_bornwolf_488nm_NA1_xy94nm_z500nm_65x65x13.tif"
+#PSF_EM_TIF          = "scripts/psf_bornwolf_488nm_NA1_xy200nm_z500nm_65x65x13.tif"
 LAMBDA_NM           = 488.0
 NA                  = 1.0
 REF_INDEX           = 1.33

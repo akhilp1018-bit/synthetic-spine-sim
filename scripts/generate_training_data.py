@@ -94,7 +94,8 @@ SCALE_TO_NM = 1.0        # sample_004 exported in nm
 # PSF settings
 # ----------------------------------------------------------
 USE_GAUSSIAN_PSF    = False
-PSF_EM_TIF          = "scripts/psf_bornwolf_488nm_NA1_xy200nm_z500nm_65x65x13.tif"
+PSF_EM_TIF          = "scripts/psf_bornwolf_488nm_NA1_xy94nm_z500nm_65x65x13.tif"
+#PSF_EM_TIF          = "scripts/psf_bornwolf_488nm_NA1_xy200nm_z500nm_65x65x13.tif"
 LAMBDA_NM           = 488.0
 NA                  = 1.0
 REF_INDEX           = 1.33
