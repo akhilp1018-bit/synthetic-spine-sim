@@ -94,7 +94,8 @@ MESH_PATH = "neuron/h01_mesh_3896803064.ply"
 USE_H01_PREPROCESS = True
 
 OUT_DIR = "scripts/zstack_out/resolution_noise_study"
-PSF_EM_TIF = "scripts/psf_bornwolf_488nm_NA1_xy200nm_z500nm_65x65x13.tif"
+PSF_EM_TIF          = "scripts/psf_bornwolf_488nm_NA1_xy94nm_z500nm_65x65x13.tif"
+#PSF_EM_TIF          = "scripts/psf_bornwolf_488nm_NA1_xy200nm_z500nm_65x65x13.tif"
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -109,8 +110,8 @@ Z_STEP_NM = Z_STEP_UM * 1000.0
 # ROI settings
 # -----------------------------
 USE_ROI = True
-ROI_SIZE_UM_X = 100.0
-ROI_SIZE_UM_Y = 100.0
+ROI_SIZE_UM_X = 200.0
+ROI_SIZE_UM_Y = 200.0
 ROI_CENTER_MODE = "bbox_center"
 MARGIN = 0.05
 
