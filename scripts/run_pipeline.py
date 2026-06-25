@@ -104,7 +104,7 @@ EXPERIMENTS = [
 # ----------------------------------------------------------
 # Mesh preprocessing
 # ----------------------------------------------------------
-SCALE_TO_NM = 1     # mesh exported in nm from Blender
+SCALE_TO_NM = 1000000    # mesh exported in nm from Blender
 RECENTER    = False   # keep False for aligned submeshes
 
 
@@ -310,6 +310,16 @@ for exp in EXPERIMENTS:
     del rho_spines
     if device.type == "cuda":
         torch.cuda.empty_cache()
+
+    # Save clean combined spines-only image
+    save_u16_stack(
+        tensor_to_u16_stack(vol_spines),
+        OUT_DIR,
+        f"{base_tag}_spines_clean",
+        xy_um_per_px,
+        z_step_um,
+    )
+
     spine_max    = float(vol_spines.max().item())
     spine_thresh = SPINE_MASK_REL_THRESHOLD * spine_max if spine_max > 0 else 0.0
     spine_mask   = (vol_spines > spine_thresh).to(torch.float32)
@@ -322,11 +332,21 @@ for exp in EXPERIMENTS:
         torch.cuda.empty_cache()
 
     # Render dendrite → create mask → save → delete immediately
-    vol_dendrite    = render_density(rho_dendrite, psf_eff, "dendrite", device)
+    vol_dendrite = render_density(rho_dendrite, psf_eff, "dendrite", device)
     del rho_dendrite
     if device.type == "cuda":
         torch.cuda.empty_cache()
-    dendrite_max    = float(vol_dendrite.max().item())
+
+    # Save clean dendrite-only image
+    save_u16_stack(
+        tensor_to_u16_stack(vol_dendrite),
+        OUT_DIR,
+        f"{base_tag}_dendrite_clean",
+        xy_um_per_px,
+        z_step_um,
+    )
+
+    dendrite_max = float(vol_dendrite.max().item())
     dendrite_thresh = DENDRITE_MASK_REL_THRESHOLD * dendrite_max if dendrite_max > 0 else 0.0
     dendrite_mask   = (vol_dendrite > dendrite_thresh).to(torch.float32)
     del vol_dendrite
