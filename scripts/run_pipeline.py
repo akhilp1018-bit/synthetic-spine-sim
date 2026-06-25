@@ -60,7 +60,7 @@ print("Using device:", device)
 # SETTINGS — change these for each sample/experiment
 # ==========================================================
 
-SAMPLE_NAME   = "sample_004"
+SAMPLE_NAME   = "sample_001"
 BASE_DIR      = f"neuron/{SAMPLE_NAME}"
 
 DENDRITE_PATH = os.path.join(BASE_DIR, "dendrite00.ply")
@@ -169,7 +169,7 @@ DENDRITE_MASK_REL_THRESHOLD = 0.2
 # SAVE_DEBUG_CLEAN_IMAGES = False → skips individual spine clean images
 # ----------------------------------------------------------
 SAVE_DEBUG_COMPONENTS   = True
-SAVE_DEBUG_CLEAN_IMAGES = False
+SAVE_DEBUG_CLEAN_IMAGES = True
 
 
 # ==========================================================
