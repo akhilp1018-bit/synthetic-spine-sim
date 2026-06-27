@@ -37,8 +37,8 @@ EXP_TAG = "xy94_z500_spacing100"
 BASE_DIR = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"
 
 PSF_MODES = [
-    #"bornwolf_1p",
-    #"bornwolf_2p",
+    "bornwolf_1p",
+    "bornwolf_2p",
     "gaussian_2p",
 ]
 
@@ -55,13 +55,16 @@ Z_NM = 500.0
 MATCH_DISTANCE_NM = 1000.0
 
 # Professor wanted PR graph over 0–1 probability threshold range.
-THRESHOLDS = np.linspace(0.0, 1.0, 101)
+THRESHOLDS = np.linspace(0.0, 1.0, 51)  # 51 thresholds: 0.00, 0.02, ..., 1.00
 
 NEIGHBORHOOD_ZYX = (5, 9, 9)
 SMOOTH_SIGMA = 1.0
 
 # Extra requested curve: recall vs matching distance from 0.1 µm to 20 µm.
-DISTANCE_THRESHOLDS_NM = np.linspace(100.0, 20000.0, 100)
+DISTANCE_THRESHOLDS_NM = np.concatenate([
+    np.array([0.0]),
+    np.linspace(100.0, 20000.0, 100),
+])
 FIXED_PROB_THRESHOLD_FOR_DISTANCE = 0.5
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -239,23 +242,26 @@ def compute_ap(recalls, precisions):
 
 def plot_pr_curve(pr_results, out_path, title):
     """
-    Plot a cleaner PR curve.
+    Cleaner PR curve for object-wise spine detection.
 
-    Notes
-    -----
-    - No artificial Ideal (1, 1) point is shown.
-    - Points are sorted by recall before plotting so the line is easier to read.
+    Changes:
+    - No artificial Ideal (1, 1) point.
+    - No sorting by recall. Points stay in threshold order.
+    - Thresholds with zero predicted peaks are removed from the plot,
+      because they create artificial vertical lines at recall=0.
     """
     plt.figure(figsize=(8, 6))
 
     for model_name, res in pr_results.items():
         recalls = np.array(res["recalls"], dtype=np.float64)
         precisions = np.array(res["precisions"], dtype=np.float64)
+        n_preds = np.array(res["n_preds"], dtype=np.int64)
 
-        # Sort by recall for cleaner visual plotting.
-        order = np.argsort(recalls)
-        recalls = recalls[order]
-        precisions = precisions[order]
+        # Remove only thresholds where the detector predicts no peak.
+        # These points are not useful visually for an object-wise PR curve.
+        valid = n_preds > 0
+        recalls = recalls[valid]
+        precisions = precisions[valid]
 
         plt.plot(
             recalls,
@@ -393,6 +399,7 @@ for psf_mode in PSF_MODES:
 
         precisions = []
         recalls = []
+        n_preds_list = []
 
         for thresh in THRESHOLDS:
             pred_xyz = detect_peaks(prob_smooth, threshold=float(thresh))
@@ -406,6 +413,7 @@ for psf_mode in PSF_MODES:
 
             precisions.append(float(precision))
             recalls.append(float(recall))
+            n_preds_list.append(int(n_preds))
 
             pr_rows.append({
                 "psf_mode": psf_mode,
@@ -443,6 +451,7 @@ for psf_mode in PSF_MODES:
         pr_results[model_name] = {
             "recalls": recalls,
             "precisions": precisions,
+            "n_preds": n_preds_list,
             "ap": ap,
         }
 
