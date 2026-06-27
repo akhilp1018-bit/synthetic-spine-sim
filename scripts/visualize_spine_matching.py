@@ -91,7 +91,7 @@ SPINE_MASK_TIF = os.path.join(
     PSF_DIR,
     f"zstack_{SAMPLE_NAME}_membrane_{PSF_MODE}_{EXP_TAG}_spine_mask.tif",
 )
-
+PYTHONPATH=. /home/hpc/iwb3/iwb3119h/synthetic-spine-sim/thesis_env/bin/python scripts/visualize_training_mips.py
 PROB_TIF = os.path.join(
     EXPORT_DIR,
     f"{MODEL_KEY}_spine_probability.tif",
