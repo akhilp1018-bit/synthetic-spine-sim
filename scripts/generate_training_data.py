@@ -20,7 +20,7 @@ This version creates masks the same way as the run pipeline:
 So the training masks are image-domain masks, matching the previous run-pipeline logic.
 
 First run:
-  NUM_INSTANCES = 5
+  NUM_INSTANCES = 1000
 
 For final run:
   NUM_INSTANCES = 1000
@@ -73,8 +73,8 @@ SAMPLES = [
 # ----------------------------------------------------------
 # Output
 # ----------------------------------------------------------
-OUT_ROOT = "training_data_gaussian_2p_render_masks_filtered_test"
-NUM_INSTANCES = 5          # first test run; change to 1000 for final run
+OUT_ROOT = "training_data_gaussian_2p_render_masks_1000"
+NUM_INSTANCES = 1000
 
 # ----------------------------------------------------------
 # Patch / volume settings

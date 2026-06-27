@@ -38,10 +38,10 @@ from PIL import Image, ImageDraw, ImageFont
 # ==========================================================
 
 # For the 5-instance test:
-DATASET_ROOT = "training_data_gaussian_2p_render_masks_filtered_test"
+DATASET_ROOT = "training_data_gaussian_2p_render_masks_1000"
 
 # For the final 1000-instance dataset, change to:
-# DATASET_ROOT = "training_data_gaussian_2p_render_masks_1000"
+# DATASET_ROOT = "training_data_gaussian_2p_render_masks_test"
 
 OUT_DIR = os.path.join(DATASET_ROOT, "review_mips")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -52,7 +52,7 @@ GRID_COLS = 20
 
 # Use all instances by default.
 # For a quick check, set MAX_INSTANCES = 100
-MAX_INSTANCES = None
+MAX_INSTANCES = None  # use all 1000 instances
 
 # Tile settings
 TILE_SIZE = 128
