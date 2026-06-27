@@ -1,11 +1,22 @@
 """
 evaluate_spines.py
 ------------------
-Complete GPU-accelerated evaluation of DeepD3 spine detection.
+Evaluate DeepD3 spine detection separately for each PSF folder.
+
+Each PSF has its own rendered image-domain GT spine mask, so IoU/Dice is
+computed against the PSF-specific mask.
+
+The object-level center evaluation uses the common spine_annotations.csv,
+because the spine centers come from the same labelled geometry.
+
+Outputs are saved separately inside each PSF folder:
+outputs/sample_001/xy94_z500_spacing100/<psf_mode>/evaluation/
 """
 
 import os
 import sys
+import glob
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import numpy as np
@@ -21,44 +32,116 @@ from scipy.ndimage import maximum_filter, gaussian_filter
 # ==========================================================
 
 SAMPLE_NAME = "sample_001"
-EXP_TAG     = "xy94_z500_spacing100"
+EXP_TAG = "xy94_z500_spacing100"
 
-BASE_DIR    = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"
-EXPORT_DIR  = os.path.join(BASE_DIR, "deepd3_exports")
-OUT_DIR     = os.path.join(BASE_DIR, "evaluation")
-os.makedirs(OUT_DIR, exist_ok=True)
+BASE_DIR = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"
+
+PSF_MODES = [
+    "bornwolf_1p",
+    "bornwolf_2p",
+    "gaussian_2p",
+]
+
+MODEL_FILES = {
+    "DeepD3_32F_94nm": "32F_94nm_spine_probability.tif",
+    "DeepD3_32F": "32F_spine_probability.tif",
+}
 
 GT_CSV = os.path.join(BASE_DIR, "spine_annotations.csv")
 
-GT_SPINE_MASK = os.path.join(
-    BASE_DIR,
-    f"zstack_{SAMPLE_NAME}_membrane_bornwolf_fiji_{EXP_TAG}_spine_mask.tif"
-)
-
-MODELS = {
-    "DeepD3_32F_94nm": os.path.join(EXPORT_DIR, "32F_94nm_spine_probability.tif"),
-    "DeepD3_32F"     : os.path.join(EXPORT_DIR, "32F_spine_probability.tif"),
-}
-
 XY_NM = 94.0
-Z_NM  = 500.0
+Z_NM = 500.0
 
 MATCH_DISTANCE_NM = 1000.0
 
-THRESHOLDS = np.linspace(0.05, 0.90, 50)
+# Professor wanted PR graph over 0–1 probability threshold range.
+THRESHOLDS = np.linspace(0.0, 1.0, 101)
 
 NEIGHBORHOOD_ZYX = (5, 9, 9)
 SMOOTH_SIGMA = 1.0
+
+# Extra requested curve: recall vs matching distance from 0.1 µm to 20 µm.
+DISTANCE_THRESHOLDS_NM = np.linspace(100.0, 20000.0, 100)
+FIXED_PROB_THRESHOLD_FOR_DISTANCE = 0.5
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 
 # ==========================================================
-# GPU Distance Matrix
+# Helpers
 # ==========================================================
 
+def load_gt_centers(csv_path):
+    """
+    Load GT spine centers from spine_annotations.csv.
+
+    Expected columns:
+        label, X, Y, Pos
+
+    Returns:
+        array with columns X, Y, Pos.
+    """
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"GT CSV not found: {csv_path}")
+
+    df = pd.read_csv(csv_path)
+
+    required = {"X", "Y", "Pos"}
+    if not required.issubset(set(df.columns)):
+        raise ValueError(
+            f"GT CSV must contain columns X, Y, Pos. Found: {df.columns.tolist()}"
+        )
+
+    if "label" in df.columns:
+        centers = df.groupby("label")[["X", "Y", "Pos"]].mean().values.astype(np.float64)
+    else:
+        centers = df[["X", "Y", "Pos"]].values.astype(np.float64)
+
+    return centers
+
+
+def find_combined_spine_mask(psf_dir):
+    """
+    Find the combined PSF-specific GT spine mask.
+
+    This pattern matches:
+        *_spine_mask.tif
+
+    It does not match individual masks:
+        *_spine1_mask.tif
+        *_spine2_mask.tif
+    """
+    candidates = sorted(glob.glob(os.path.join(psf_dir, "*_spine_mask.tif")))
+
+    if len(candidates) == 0:
+        raise FileNotFoundError(f"No combined spine mask found in: {psf_dir}")
+
+    if len(candidates) > 1:
+        print("WARNING: multiple combined spine-mask candidates found:")
+        for c in candidates:
+            print(f"  {c}")
+        print(f"Using first one: {candidates[0]}")
+
+    return candidates[0]
+
+
+def load_probability_01(path):
+    prob_raw = tifffile.imread(path).astype(np.float32)
+    prob_raw = np.nan_to_num(prob_raw, nan=0.0, posinf=1.0, neginf=0.0)
+
+    if prob_raw.max() > 1.0:
+        prob_01 = prob_raw / 65535.0
+    else:
+        prob_01 = prob_raw
+
+    return np.clip(prob_01, 0.0, 1.0)
+
+
 def distance_matrix_gpu(pA, pB, dx=94.0, dy=94.0, dz=500.0):
+    if len(pA) == 0 or len(pB) == 0:
+        return np.zeros((len(pA), len(pB)), dtype=np.float32)
+
     pA_t = torch.tensor(pA, dtype=torch.float32, device=device)
     pB_t = torch.tensor(pB, dtype=torch.float32, device=device)
 
@@ -70,9 +153,59 @@ def distance_matrix_gpu(pA, pB, dx=94.0, dy=94.0, dz=500.0):
     return M.cpu().numpy()
 
 
-# ==========================================================
-# GPU IoU / Dice
-# ==========================================================
+def greedy_match_counts(gt_xyz, pred_xyz, max_distance_nm):
+    """
+    One-to-one greedy matching by nearest valid GT-prediction pair.
+    """
+    P = len(gt_xyz)
+    N = len(pred_xyz)
+
+    if N == 0:
+        return 0, 0, P
+
+    if P == 0:
+        return 0, N, 0
+
+    M = distance_matrix_gpu(gt_xyz, pred_xyz, dx=XY_NM, dy=XY_NM, dz=Z_NM)
+
+    pairs = np.argwhere(M <= max_distance_nm)
+
+    if len(pairs) == 0:
+        return 0, N, P
+
+    pair_dist = M[pairs[:, 0], pairs[:, 1]]
+    order = np.argsort(pair_dist)
+
+    used_gt = set()
+    used_pred = set()
+
+    for idx in order:
+        gt_i = int(pairs[idx, 0])
+        pred_j = int(pairs[idx, 1])
+
+        if gt_i not in used_gt and pred_j not in used_pred:
+            used_gt.add(gt_i)
+            used_pred.add(pred_j)
+
+    TP = len(used_gt)
+    FP = N - TP
+    FN = P - TP
+
+    return int(TP), int(FP), int(FN)
+
+
+def detect_peaks(prob_smooth, threshold):
+    local_max = maximum_filter(prob_smooth, size=NEIGHBORHOOD_ZYX)
+    is_peak = (prob_smooth == local_max) & (prob_smooth > threshold)
+    peak_coords_zyx = np.argwhere(is_peak).astype(np.float64)
+
+    if len(peak_coords_zyx) == 0:
+        return np.zeros((0, 3), dtype=np.float64)
+
+    # Convert ZYX -> XYZ
+    pred_xyz = peak_coords_zyx[:, [2, 1, 0]]
+    return pred_xyz
+
 
 def compute_iou_dice_gpu(gt_binary, pred_prob, threshold):
     gt = torch.tensor(gt_binary, dtype=torch.bool, device=device)
@@ -87,295 +220,315 @@ def compute_iou_dice_gpu(gt_binary, pred_prob, threshold):
     iou = (intersection / union).item() if union > 0 else 0.0
     dice = (2.0 * intersection / (gt_sum + pred_sum)).item() if (gt_sum + pred_sum) > 0 else 0.0
 
-    return iou, dice
+    return float(iou), float(dice)
 
 
-# ==========================================================
-# Load Ground Truth
-# ==========================================================
-
-print("\nLoading ground truth...")
-
-gt_df = pd.read_csv(GT_CSV, index_col=0)
-
-labels = gt_df.groupby("label").sum()
-r = labels.Rater.apply(len)
-
-labels_avg = labels[["X", "Y", "Pos"]].values.astype(float) / r.values[..., None]
-
-P = len(labels_avg)
-
-print(f"  GT spines: {P}")
-
-print("  Loading GT spine mask...")
-gt_spine_mask = tifffile.imread(GT_SPINE_MASK).astype(np.float32)
-gt_binary = (gt_spine_mask > 0).astype(np.uint8)
-
-print(f"  GT mask shape: {gt_binary.shape}")
-
-
-# ==========================================================
-# Evaluate Each Model
-# ==========================================================
-
-pr_rows = []
-iou_rows = []
-pr_results = {}
-
-for model_name, spine_prob_path in MODELS.items():
-
-    if not os.path.exists(spine_prob_path):
-        print(f"\nWARNING: {spine_prob_path} not found — skipping!")
-        continue
-
-    print(f"\n{'=' * 70}")
-    print(f"Evaluating: {model_name}")
-    print(f"{'=' * 70}")
-    print(
-        f"{'thresh':>8} {'preds':>6} {'TP':>5} {'FP':>5} {'FN':>5} "
-        f"{'Recall':>8} {'Precision':>10} {'IoU':>7} {'Dice':>7}"
-    )
-    print("-" * 70)
-
-    prob_raw = tifffile.imread(spine_prob_path).astype(np.float32)
-
-    # DeepD3 probabilities are usually stored as uint16, so normalize to 0–1
-    if prob_raw.max() > 1.0:
-        prob_01 = prob_raw / 65535.0
-    else:
-        prob_01 = prob_raw
-
-    prob_smooth = gaussian_filter(prob_01, sigma=SMOOTH_SIGMA)
-
-    precisions = []
-    recalls = []
-    n_preds = []
-
-    for thresh in THRESHOLDS:
-
-        local_max = maximum_filter(prob_smooth, size=NEIGHBORHOOD_ZYX)
-        is_peak = (prob_smooth == local_max) & (prob_smooth > thresh)
-
-        peak_coords = np.argwhere(is_peak).astype(np.float64)
-
-        if len(peak_coords) == 0:
-            TP = 0
-            FP = 0
-            FN = P
-            TP_FP = 0
-
-            precision = 0.0
-            recall = 0.0
-
-        else:
-            # peak_coords is ZYX, convert to XYZ
-            pred_xyz = peak_coords[:, [2, 1, 0]]
-            TP_FP = len(pred_xyz)
-
-            M = distance_matrix_gpu(
-                labels_avg.astype(np.float64),
-                pred_xyz,
-                dx=XY_NM,
-                dy=XY_NM,
-                dz=Z_NM,
-            )
-
-            Mfound = np.zeros_like(M, dtype=bool)
-
-            initial_guesses = np.argmin(M, axis=1)
-
-            for i in range(P):
-                Mfound[i, initial_guesses[i]] = (
-                    M[i, initial_guesses[i]] <= MATCH_DISTANCE_NM
-                )
-
-            # Resolve cases where multiple GT spines match one prediction
-            for j in range(TP_FP):
-                ambiguous = Mfound[:, j].sum()
-
-                if ambiguous > 1:
-                    ix = np.where(Mfound[:, j])[0]
-                    ix_smallest = np.argmin(M[ix, j])
-
-                    for k in range(len(ix)):
-                        if k != ix_smallest:
-                            Mfound[ix[k], j] = False
-
-            TP = int(Mfound.sum())
-            FP = int(TP_FP - TP)
-            FN = int(P - TP)
-
-            recall = TP / P if P > 0 else 0.0
-            precision = TP / TP_FP if TP_FP > 0 else 0.0
-
-        precisions.append(float(precision))
-        recalls.append(float(recall))
-        n_preds.append(int(TP_FP))
-
-        iou, dice = compute_iou_dice_gpu(gt_binary, prob_01, thresh)
-
-        print(
-            f"  {thresh:>6.2f} {TP_FP:>6} {TP:>5} {FP:>5} {FN:>5} "
-            f"{recall:>8.3f} {precision:>10.3f} {iou:>7.3f} {dice:>7.3f}"
-        )
-
-        pr_rows.append({
-            "model": model_name,
-            "threshold": float(thresh),
-            "TP": int(TP),
-            "FP": int(FP),
-            "FN": int(FN),
-            "precision": float(precision),
-            "recall": float(recall),
-            "n_preds": int(TP_FP),
-        })
-
-        iou_rows.append({
-            "model": model_name,
-            "threshold": float(thresh),
-            "iou": float(iou),
-            "dice": float(dice),
-        })
-
-    # ======================================================
-    # Average Precision
-    # ======================================================
-
+def compute_ap(recalls, precisions):
     rec_arr = np.array(recalls, dtype=np.float64)
     prec_arr = np.array(precisions, dtype=np.float64)
 
     sort_idx = np.argsort(rec_arr)
-
     rec_sorted = rec_arr[sort_idx]
     prec_sorted = prec_arr[sort_idx]
 
     rec_sorted = np.concatenate(([0.0], rec_sorted, [1.0]))
     prec_sorted = np.concatenate(([1.0], prec_sorted, [0.0]))
 
-    ap = float(np.trapezoid(prec_sorted, rec_sorted))
+    return float(np.trapezoid(prec_sorted, rec_sorted))
 
-    pr_results[model_name] = {
-        "recalls": recalls,
-        "precisions": precisions,
-        "ap": ap,
-    }
 
-    print(f"\n  AP = {ap:.4f}")
+def plot_pr_curve(pr_results, out_path, title):
+    plt.figure(figsize=(8, 6))
+
+    for model_name, res in pr_results.items():
+        plt.plot(
+            res["recalls"],
+            res["precisions"],
+            marker="o",
+            markersize=3,
+            linewidth=1.5,
+            label=f"{model_name} (AP={res['ap']:.3f})",
+        )
+
+    # Ideal point requested by professor.
+    plt.scatter([1.0], [1.0], marker="*", s=140, label="Ideal (1, 1)")
+
+    plt.xlabel("Recall", fontsize=13)
+    plt.ylabel("Precision", fontsize=13)
+    plt.title(title, fontsize=12)
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.xlim([0, 1])
+    plt.ylim([0, 1])
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+
+
+def plot_iou_dice(iou_df, out_path, title):
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    for model_name in sorted(iou_df["model"].unique()):
+        df = iou_df[iou_df["model"] == model_name]
+
+        axes[0].plot(df["threshold"], df["iou"], marker="o", markersize=3, label=model_name)
+        axes[1].plot(df["threshold"], df["dice"], marker="o", markersize=3, label=model_name)
+
+    axes[0].set_xlabel("Probability threshold", fontsize=12)
+    axes[0].set_ylabel("IoU", fontsize=12)
+    axes[0].set_title("IoU vs threshold — spine", fontsize=12)
+    axes[0].legend(fontsize=10)
+    axes[0].grid(True, alpha=0.3)
+    axes[0].set_xlim([0, 1])
+    axes[0].set_ylim([0, 1])
+
+    axes[1].set_xlabel("Probability threshold", fontsize=12)
+    axes[1].set_ylabel("Dice score", fontsize=12)
+    axes[1].set_title("Dice score vs threshold — spine", fontsize=12)
+    axes[1].legend(fontsize=10)
+    axes[1].grid(True, alpha=0.3)
+    axes[1].set_xlim([0, 1])
+    axes[1].set_ylim([0, 1])
+
+    plt.suptitle(title, fontsize=13)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+
+
+def plot_recall_vs_distance(dist_df, out_path, title):
+    plt.figure(figsize=(8, 6))
+
+    for model_name in sorted(dist_df["model"].unique()):
+        df = dist_df[dist_df["model"] == model_name]
+
+        plt.plot(
+            df["distance_um"],
+            df["recall"],
+            marker="o",
+            markersize=3,
+            linewidth=1.5,
+            label=model_name,
+        )
+
+    plt.xlabel("Matching distance threshold (µm)", fontsize=13)
+    plt.ylabel("Recall", fontsize=13)
+    plt.title(title, fontsize=12)
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.xlim([0, 20])
+    plt.ylim([0, 1])
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
 
 
 # ==========================================================
-# Save CSVs
+# Main evaluation
 # ==========================================================
 
-pd.DataFrame(pr_rows).to_csv(
-    os.path.join(OUT_DIR, "pr_curve_results.csv"),
-    index=False
-)
+print("\nLoading common GT centers...")
+labels_avg = load_gt_centers(GT_CSV)
+P = len(labels_avg)
+print(f"GT spines: {P}")
 
-pd.DataFrame(iou_rows).to_csv(
-    os.path.join(OUT_DIR, "iou_dice_results.csv"),
-    index=False
-)
+all_summary_rows = []
 
-print(f"\nSaved CSVs to {OUT_DIR}/")
+for psf_mode in PSF_MODES:
+    psf_dir = os.path.join(BASE_DIR, psf_mode)
+    export_dir = os.path.join(psf_dir, "deepd3_exports")
+    out_dir = os.path.join(psf_dir, "evaluation")
+    os.makedirs(out_dir, exist_ok=True)
 
-
-# ==========================================================
-# Plot PR Curve
-# ==========================================================
-
-colors = {
-    "DeepD3_32F_94nm": "blue",
-    "DeepD3_32F": "orange",
-}
-
-plt.figure(figsize=(8, 6))
-
-for model_name, res in pr_results.items():
-    plt.plot(
-        res["recalls"],
-        res["precisions"],
-        marker="o",
-        markersize=4,
-        label=f"{model_name} (AP={res['ap']:.3f})",
-        color=colors.get(model_name, "gray"),
-    )
-
-plt.xlabel("Recall", fontsize=13)
-plt.ylabel("Precision", fontsize=13)
-plt.title(
-    f"Precision-Recall Curve\n"
-    f"{SAMPLE_NAME} — {EXP_TAG} — match={MATCH_DISTANCE_NM} nm",
-    fontsize=12,
-)
-plt.legend(fontsize=11)
-plt.grid(True, alpha=0.3)
-plt.xlim([0, 1])
-plt.ylim([0, 1])
-plt.tight_layout()
-
-plt.savefig(os.path.join(OUT_DIR, "pr_curve.png"), dpi=150)
-plt.close()
-
-print("PR curve saved!")
-
-
-# ==========================================================
-# Plot IoU / Dice Curves
-# ==========================================================
-
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-iou_df = pd.DataFrame(iou_rows)
-
-for model_name in MODELS.keys():
-    df = iou_df[iou_df["model"] == model_name]
-
-    if df.empty:
+    if not os.path.isdir(psf_dir):
+        print(f"\nWARNING: PSF folder not found, skipping: {psf_dir}")
         continue
 
-    color = colors.get(model_name, "gray")
+    print("\n" + "#" * 80)
+    print(f"Evaluating PSF separately: {psf_mode}")
+    print(f"PSF folder : {psf_dir}")
+    print(f"Eval output: {out_dir}")
+    print("#" * 80)
 
-    axes[0].plot(
-        df["threshold"],
-        df["iou"],
-        marker="o",
-        markersize=3,
-        label=model_name,
-        color=color,
-    )
+    gt_spine_mask_path = find_combined_spine_mask(psf_dir)
+    print(f"Using PSF-specific GT mask: {gt_spine_mask_path}")
 
-    axes[1].plot(
-        df["threshold"],
-        df["dice"],
-        marker="o",
-        markersize=3,
-        label=model_name,
-        color=color,
-    )
+    gt_spine_mask = tifffile.imread(gt_spine_mask_path).astype(np.float32)
+    gt_binary = (gt_spine_mask > 0).astype(np.uint8)
+    print(f"GT mask shape: {gt_binary.shape}")
 
-axes[0].set_xlabel("Probability Threshold", fontsize=12)
-axes[0].set_ylabel("IoU", fontsize=12)
-axes[0].set_title("IoU vs Threshold — Spine", fontsize=12)
-axes[0].legend(fontsize=10)
-axes[0].grid(True, alpha=0.3)
-axes[0].set_xlim([0, 1])
-axes[0].set_ylim([0, 1])
+    pr_rows = []
+    iou_rows = []
+    distance_rows = []
+    pr_results = {}
+    summary_rows = []
 
-axes[1].set_xlabel("Probability Threshold", fontsize=12)
-axes[1].set_ylabel("Dice Score", fontsize=12)
-axes[1].set_title("Dice Score vs Threshold — Spine", fontsize=12)
-axes[1].legend(fontsize=10)
-axes[1].grid(True, alpha=0.3)
-axes[1].set_xlim([0, 1])
-axes[1].set_ylim([0, 1])
+    for model_name, model_file in MODEL_FILES.items():
+        spine_prob_path = os.path.join(export_dir, model_file)
 
-plt.suptitle(f"{SAMPLE_NAME} — {EXP_TAG}", fontsize=13)
-plt.tight_layout()
+        if not os.path.exists(spine_prob_path):
+            print(f"\nWARNING: probability TIFF not found, skipping: {spine_prob_path}")
+            continue
 
-plt.savefig(os.path.join(OUT_DIR, "iou_dice_curves.png"), dpi=150)
-plt.close()
+        print("\n" + "=" * 70)
+        print(f"PSF   : {psf_mode}")
+        print(f"Model : {model_name}")
+        print(f"Prob  : {spine_prob_path}")
+        print("=" * 70)
 
-print("IoU/Dice curves saved!")
+        prob_01 = load_probability_01(spine_prob_path)
+        prob_smooth = gaussian_filter(prob_01, sigma=SMOOTH_SIGMA)
 
-print(f"\nDone! All results saved to: {OUT_DIR}/")
+        precisions = []
+        recalls = []
+
+        for thresh in THRESHOLDS:
+            pred_xyz = detect_peaks(prob_smooth, threshold=float(thresh))
+            TP, FP, FN = greedy_match_counts(labels_avg, pred_xyz, MATCH_DISTANCE_NM)
+
+            n_preds = len(pred_xyz)
+            precision = TP / n_preds if n_preds > 0 else 0.0
+            recall = TP / P if P > 0 else 0.0
+
+            iou, dice = compute_iou_dice_gpu(gt_binary, prob_01, float(thresh))
+
+            precisions.append(float(precision))
+            recalls.append(float(recall))
+
+            pr_rows.append({
+                "psf_mode": psf_mode,
+                "model": model_name,
+                "threshold": float(thresh),
+                "TP": int(TP),
+                "FP": int(FP),
+                "FN": int(FN),
+                "precision": float(precision),
+                "recall": float(recall),
+                "n_preds": int(n_preds),
+            })
+
+            iou_rows.append({
+                "psf_mode": psf_mode,
+                "model": model_name,
+                "threshold": float(thresh),
+                "iou": float(iou),
+                "dice": float(dice),
+            })
+
+        ap = compute_ap(recalls, precisions)
+
+        best_f1 = -1.0
+        best_row = None
+        for row in pr_rows:
+            if row["psf_mode"] == psf_mode and row["model"] == model_name:
+                p = row["precision"]
+                r = row["recall"]
+                f1 = (2 * p * r / (p + r)) if (p + r) > 0 else 0.0
+                if f1 > best_f1:
+                    best_f1 = f1
+                    best_row = row
+
+        pr_results[model_name] = {
+            "recalls": recalls,
+            "precisions": precisions,
+            "ap": ap,
+        }
+
+        print(f"AP: {ap:.4f}")
+        if best_row is not None:
+            print(
+                f"Best F1: {best_f1:.4f} at threshold={best_row['threshold']:.2f} "
+                f"precision={best_row['precision']:.3f} recall={best_row['recall']:.3f}"
+            )
+
+        summary_row = {
+            "psf_mode": psf_mode,
+            "model": model_name,
+            "AP": float(ap),
+            "best_F1": float(best_f1),
+            "best_threshold": float(best_row["threshold"]) if best_row is not None else np.nan,
+            "best_precision": float(best_row["precision"]) if best_row is not None else np.nan,
+            "best_recall": float(best_row["recall"]) if best_row is not None else np.nan,
+            "best_n_preds": int(best_row["n_preds"]) if best_row is not None else 0,
+        }
+
+        summary_rows.append(summary_row)
+        all_summary_rows.append(summary_row)
+
+        # Recall vs distance at fixed probability threshold.
+        pred_xyz_fixed = detect_peaks(prob_smooth, threshold=FIXED_PROB_THRESHOLD_FOR_DISTANCE)
+
+        for dist_nm in DISTANCE_THRESHOLDS_NM:
+            TP, FP, FN = greedy_match_counts(labels_avg, pred_xyz_fixed, float(dist_nm))
+            recall = TP / P if P > 0 else 0.0
+            precision = TP / len(pred_xyz_fixed) if len(pred_xyz_fixed) > 0 else 0.0
+
+            distance_rows.append({
+                "psf_mode": psf_mode,
+                "model": model_name,
+                "prob_threshold": float(FIXED_PROB_THRESHOLD_FOR_DISTANCE),
+                "distance_nm": float(dist_nm),
+                "distance_um": float(dist_nm / 1000.0),
+                "TP": int(TP),
+                "FP": int(FP),
+                "FN": int(FN),
+                "precision": float(precision),
+                "recall": float(recall),
+                "n_preds": int(len(pred_xyz_fixed)),
+            })
+
+        del prob_01, prob_smooth
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    # Save PSF-specific CSVs.
+    pr_df = pd.DataFrame(pr_rows)
+    iou_df = pd.DataFrame(iou_rows)
+    dist_df = pd.DataFrame(distance_rows)
+    summary_df = pd.DataFrame(summary_rows)
+
+    pr_df.to_csv(os.path.join(out_dir, "pr_curve_results.csv"), index=False)
+    iou_df.to_csv(os.path.join(out_dir, "iou_dice_results.csv"), index=False)
+    dist_df.to_csv(os.path.join(out_dir, "recall_vs_distance_results.csv"), index=False)
+    summary_df.to_csv(os.path.join(out_dir, "summary.csv"), index=False)
+
+    # Save PSF-specific plots.
+    if len(pr_results) > 0:
+        plot_pr_curve(
+            pr_results,
+            os.path.join(out_dir, "pr_curve.png"),
+            title=f"Precision-recall curve\n{SAMPLE_NAME} — {psf_mode} — match={MATCH_DISTANCE_NM:.0f} nm",
+        )
+
+    if not iou_df.empty:
+        plot_iou_dice(
+            iou_df,
+            os.path.join(out_dir, "iou_dice_curves.png"),
+            title=f"{SAMPLE_NAME} — {psf_mode}",
+        )
+
+    if not dist_df.empty:
+        plot_recall_vs_distance(
+            dist_df,
+            os.path.join(out_dir, "recall_vs_distance.png"),
+            title=(
+                f"Recall vs matching distance\n"
+                f"{SAMPLE_NAME} — {psf_mode} — prob threshold={FIXED_PROB_THRESHOLD_FOR_DISTANCE}"
+            ),
+        )
+
+    print(f"\nSaved separate evaluation for {psf_mode}: {out_dir}")
+
+
+# Save common summary table only, not combined curves.
+if all_summary_rows:
+    all_summary_df = pd.DataFrame(all_summary_rows)
+    all_summary_path = os.path.join(BASE_DIR, "evaluation_summary_all_psfs.csv")
+    all_summary_df.to_csv(all_summary_path, index=False)
+
+    print("\n" + "=" * 80)
+    print(f"Saved all-PSF summary table: {all_summary_path}")
+    print("=" * 80)
+    print(all_summary_df)
+
+print("\nDone. Each PSF was evaluated in its own folder.")
