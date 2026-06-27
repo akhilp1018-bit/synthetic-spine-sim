@@ -238,20 +238,33 @@ def compute_ap(recalls, precisions):
 
 
 def plot_pr_curve(pr_results, out_path, title):
+    """
+    Plot a cleaner PR curve.
+
+    Notes
+    -----
+    - No artificial Ideal (1, 1) point is shown.
+    - Points are sorted by recall before plotting so the line is easier to read.
+    """
     plt.figure(figsize=(8, 6))
 
     for model_name, res in pr_results.items():
+        recalls = np.array(res["recalls"], dtype=np.float64)
+        precisions = np.array(res["precisions"], dtype=np.float64)
+
+        # Sort by recall for cleaner visual plotting.
+        order = np.argsort(recalls)
+        recalls = recalls[order]
+        precisions = precisions[order]
+
         plt.plot(
-            res["recalls"],
-            res["precisions"],
+            recalls,
+            precisions,
             marker="o",
             markersize=3,
             linewidth=1.5,
             label=f"{model_name} (AP={res['ap']:.3f})",
         )
-
-    # Ideal point requested by professor.
-    plt.scatter([1.0], [1.0], marker="*", s=140, label="Ideal (1, 1)")
 
     plt.xlabel("Recall", fontsize=13)
     plt.ylabel("Precision", fontsize=13)
@@ -263,7 +276,6 @@ def plot_pr_curve(pr_results, out_path, title):
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     plt.close()
-
 
 def plot_iou_dice(iou_df, out_path, title):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
