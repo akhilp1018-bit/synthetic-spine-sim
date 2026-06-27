@@ -5,17 +5,19 @@ Generate random 128x128 DeepD3 training instances from labelled neuron meshes.
 
 Each instance contains:
   - image.tif         : synthetic fluorescence image, 8-bit, ZYX stack
-  - spine_mask.tif    : binary spine GT mask, 8-bit, ZYX stack
-  - dendrite_mask.tif : binary dendrite GT mask, 8-bit, ZYX stack
+  - spine_mask.tif    : binary rendered-domain spine GT mask, 8-bit, ZYX stack
+  - dendrite_mask.tif : binary rendered-domain dendrite GT mask, 8-bit, ZYX stack
   - metadata.txt      : parameters used for this instance
 
-Main training-data logic:
-  - Randomly choose sample_001 or sample_004
-  - Randomly rotate the mesh
-  - Randomly choose XY resolution between 60 and 300 nm/px
-  - Randomly crop a 128x128 field of view around the dendrite
-  - Render the image with Gaussian 2P-like PSF
-  - Save GT masks from raw geometry density before smoothing and before PSF
+IMPORTANT:
+This version creates masks the same way as the run pipeline:
+  1. Build density from labelled meshes
+  2. Render dendrite and spines separately using PSF convolution
+  3. Threshold each rendered component at relative threshold:
+       spine_mask    = vol_spines   > 0.2 * max(vol_spines)
+       dendrite_mask = vol_dendrite > 0.2 * max(vol_dendrite)
+
+So the training masks are image-domain masks, matching the previous run-pipeline logic.
 
 First run:
   NUM_INSTANCES = 5
@@ -35,7 +37,7 @@ import tifffile
 import mitsuba as mi
 
 from src.transform_utils import generate_random_transform, cleanup_temp_meshes
-from src.render_utils import build_density_for_mesh, render_density
+from src.render_utils import build_density_for_mesh, render_density, create_masks
 from src.psf_utils import make_gaussian_psf_matched_zyx
 from src.density_utils import ensure_psf_odd_xy
 
@@ -55,8 +57,6 @@ print("Using device:", device)
 # ==========================================================
 
 # Use only samples whose mesh scale you know.
-# sample_001: Blender/export scale used previously, convert to nm with 1e6
-# sample_004: already exported in nm
 SAMPLES = [
     {
         "name": "sample_001",
@@ -73,7 +73,7 @@ SAMPLES = [
 # ----------------------------------------------------------
 # Output
 # ----------------------------------------------------------
-OUT_ROOT = "training_data_gaussian_2p_test"
+OUT_ROOT = "training_data_gaussian_2p_render_masks_test"
 NUM_INSTANCES = 5          # first test run; change to 1000 for final run
 
 # ----------------------------------------------------------
@@ -114,6 +114,12 @@ INTENSITY_VAR_STD = 0.10
 INTENSITY_VAR_SIGMA_ZYX = (2.0, 4.0, 4.0)
 
 # ----------------------------------------------------------
+# Mask settings: same idea as run pipeline
+# ----------------------------------------------------------
+SPINE_MASK_REL_THRESHOLD = 0.2
+DENDRITE_MASK_REL_THRESHOLD = 0.2
+
+# ----------------------------------------------------------
 # Optional simple image noise
 # Keep False first. Turn on later if Andreas wants noisy training data.
 # ----------------------------------------------------------
@@ -125,7 +131,7 @@ NOISE_SEED_BASE = 1234
 # Skip empty crops
 # ----------------------------------------------------------
 MIN_SPINES_IN_FOV = 1
-MIN_SPINE_GT_VOXELS = 1
+MIN_SPINE_MASK_VOXELS = 1
 MAX_TRANSFORM_TRIES = 50
 
 
@@ -181,9 +187,9 @@ def add_simple_noise_uint8(image_8bit, seed):
     rng = np.random.default_rng(seed)
 
     img = image_8bit.astype(np.float32)
-
-    # Mild Poisson-like noise after scaling to 0..1
     img01 = img / 255.0
+
+    # Mild Poisson-like noise
     peak = 200.0
     noisy = rng.poisson(img01 * peak) / peak
 
@@ -222,9 +228,6 @@ def save_instance_metadata(out_dir, meta):
 def make_gaussian_2p_psf_for_instance(xy_um_per_px, z_step_um):
     """
     Make Gaussian 2P-like PSF matched to current XY/Z sampling.
-
-    If your psf_utils already supports two_photon_like=True, use that.
-    If not, fall back to squaring and normalizing here.
     """
     try:
         psf = make_gaussian_psf_matched_zyx(
@@ -248,6 +251,8 @@ def make_gaussian_2p_psf_for_instance(xy_um_per_px, z_step_um):
         )
         psf = np.asarray(psf, dtype=np.float32)
         psf = np.maximum(psf, 0.0)
+
+        # 2P-like effective PSF: square and renormalize.
         psf = psf ** 2
         psf = psf / (psf.sum() + 1e-12)
 
@@ -282,7 +287,9 @@ def main():
     print(f"XY range     : {RES_MIN_NM}-{RES_MAX_NM} nm/px")
     print(f"Z step       : {Z_STEP_NM} nm")
     print(f"PSF          : {PSF_MODE}")
-    print(f"GT masks     : raw density before smoothing and before PSF")
+    print("GT masks     : rendered component masks, thresholded at relative max")
+    print(f"Spine thresh : {SPINE_MASK_REL_THRESHOLD} * max(rendered_spines)")
+    print(f"Dend thresh  : {DENDRITE_MASK_REL_THRESHOLD} * max(rendered_dendrite)")
     print(f"Noise        : {USE_NOISE}")
     print("=" * 80)
 
@@ -380,55 +387,39 @@ def main():
             )
 
             # ------------------------------------------------------
-            # Dendrite density
-            # return_raw=True gives:
-            #   raw density    -> GT mask
-            #   smooth density -> rendered image
+            # Build smoothed density for dendrite and spines
             # ------------------------------------------------------
-            rho_dendrite_gt, rho_dendrite_render = build_density_for_mesh(
+            rho_dendrite = build_density_for_mesh(
                 transform["sim_dendrite_path"],
                 tag="dendrite",
-                return_raw=True,
                 **density_kwargs,
             )
 
-            # ------------------------------------------------------
-            # Spine densities
-            # ------------------------------------------------------
-            rho_spines_gt = torch.zeros_like(rho_dendrite_gt)
-            rho_spines_render = torch.zeros_like(rho_dendrite_render)
+            rho_spines = torch.zeros_like(rho_dendrite)
 
             for sp_idx, sp_path in enumerate(transform["sim_spine_paths"], start=1):
-                rho_sp_gt, rho_sp_render = build_density_for_mesh(
+                rho_sp = build_density_for_mesh(
                     sp_path,
                     tag=f"spine_{sp_idx}",
-                    return_raw=True,
                     **density_kwargs,
                 )
 
-                rho_spines_gt = rho_spines_gt + rho_sp_gt
-                rho_spines_render = rho_spines_render + rho_sp_render
+                rho_spines = rho_spines + rho_sp
 
-                del rho_sp_gt, rho_sp_render
+                del rho_sp
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
 
-            spine_gt_voxels = int((rho_spines_gt > 0).sum().item())
-            dendrite_gt_voxels = int((rho_dendrite_gt > 0).sum().item())
-
-            if spine_gt_voxels < MIN_SPINE_GT_VOXELS:
-                print("  Spine GT mask is empty, retrying.")
-                cleanup_temp_meshes(transform)
-                del rho_dendrite_gt, rho_dendrite_render, rho_spines_gt, rho_spines_render, psf_eff
-                if device.type == "cuda":
-                    torch.cuda.empty_cache()
-                continue
+            # ------------------------------------------------------
+            # Render each component separately, same as run pipeline
+            # ------------------------------------------------------
+            vol_dendrite = render_density(rho_dendrite, psf_eff, "dendrite", device)
+            vol_spines = render_density(rho_spines, psf_eff, "spines", device)
+            vol_all = vol_dendrite + vol_spines
 
             # ------------------------------------------------------
-            # Render image from smoothed density + PSF
+            # Image
             # ------------------------------------------------------
-            rho_all_render = rho_dendrite_render + rho_spines_render
-            vol_all = render_density(rho_all_render, psf_eff, "all", device)
             image_8bit = volume_to_8bit(vol_all)
 
             if USE_NOISE:
@@ -438,10 +429,28 @@ def main():
                 )
 
             # ------------------------------------------------------
-            # GT masks from raw density only
+            # GT masks from rendered component volumes, same as pipeline
             # ------------------------------------------------------
-            spine_mask_8bit = mask_tensor_to_8bit(rho_spines_gt > 0)
-            dendrite_mask_8bit = mask_tensor_to_8bit(rho_dendrite_gt > 0)
+            spine_mask, dendrite_mask = create_masks(
+                vol_spines,
+                vol_dendrite,
+                spine_threshold_rel=SPINE_MASK_REL_THRESHOLD,
+                dendrite_threshold_rel=DENDRITE_MASK_REL_THRESHOLD,
+            )
+
+            spine_mask_8bit = mask_tensor_to_8bit(spine_mask)
+            dendrite_mask_8bit = mask_tensor_to_8bit(dendrite_mask)
+
+            spine_mask_voxels = int((spine_mask > 0).sum().item())
+            dendrite_mask_voxels = int((dendrite_mask > 0).sum().item())
+
+            if spine_mask_voxels < MIN_SPINE_MASK_VOXELS:
+                print("  Spine rendered mask is empty, retrying.")
+                cleanup_temp_meshes(transform)
+                del rho_dendrite, rho_spines, vol_dendrite, vol_spines, vol_all, psf_eff
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+                continue
 
             # ------------------------------------------------------
             # Save
@@ -453,8 +462,10 @@ def main():
                 "sample_name": sample_name,
                 "attempt": attempt,
                 "psf_mode": PSF_MODE,
-                "gt_mask_source": "raw_density_before_smoothing_before_psf",
-                "image_source": "smoothed_density_convolved_with_gaussian_2p_psf",
+                "gt_mask_source": "rendered_component_threshold_same_as_run_pipeline",
+                "image_source": "rendered_dendrite_plus_rendered_spines",
+                "spine_mask_rel_threshold": SPINE_MASK_REL_THRESHOLD,
+                "dendrite_mask_rel_threshold": DENDRITE_MASK_REL_THRESHOLD,
                 "xy_nm_per_px": transform["xy_nm_per_px"],
                 "xy_um_per_px": xy_um_per_px,
                 "z_step_nm": Z_STEP_NM,
@@ -464,8 +475,8 @@ def main():
                 "origin_nm": origin_nm,
                 "scale_to_nm": sample_cfg["scale_to_nm"],
                 "spines_in_fov": len(transform["sim_spine_paths"]),
-                "spine_gt_voxels": spine_gt_voxels,
-                "dendrite_gt_voxels": dendrite_gt_voxels,
+                "spine_mask_voxels": spine_mask_voxels,
+                "dendrite_mask_voxels": dendrite_mask_voxels,
                 "labeling_mode": LABELING_MODE,
                 "spacing_nm": SPACING_NM,
                 "density_smooth_sigma_zyx": DENSITY_SMOOTH_SIGMA_ZYX,
@@ -479,23 +490,25 @@ def main():
                 "path": instance_dir,
                 "sample_name": sample_name,
                 "psf_mode": PSF_MODE,
+                "mask_source": "rendered_component_threshold",
+                "spine_mask_rel_threshold": SPINE_MASK_REL_THRESHOLD,
+                "dendrite_mask_rel_threshold": DENDRITE_MASK_REL_THRESHOLD,
                 "xy_nm_per_px": transform["xy_nm_per_px"],
                 "z_step_nm": Z_STEP_NM,
                 "spines_in_fov": len(transform["sim_spine_paths"]),
-                "spine_gt_voxels": spine_gt_voxels,
-                "dendrite_gt_voxels": dendrite_gt_voxels,
+                "spine_mask_voxels": spine_mask_voxels,
+                "dendrite_mask_voxels": dendrite_mask_voxels,
                 "use_noise": USE_NOISE,
             })
 
             print(f"  Saved -> {instance_dir}")
-            print(f"  GT voxels: spine={spine_gt_voxels}, dendrite={dendrite_gt_voxels}")
+            print(f"  Mask voxels: spine={spine_mask_voxels}, dendrite={dendrite_mask_voxels}")
 
             # ------------------------------------------------------
             # Cleanup
             # ------------------------------------------------------
-            del rho_dendrite_gt, rho_dendrite_render
-            del rho_spines_gt, rho_spines_render
-            del rho_all_render, vol_all, psf_eff
+            del rho_dendrite, rho_spines
+            del vol_dendrite, vol_spines, vol_all, psf_eff
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
