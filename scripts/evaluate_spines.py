@@ -37,8 +37,8 @@ EXP_TAG = "xy94_z500_spacing100"
 BASE_DIR = f"outputs/{SAMPLE_NAME}/{EXP_TAG}"
 
 PSF_MODES = [
-    "bornwolf_1p",
-    "bornwolf_2p",
+    #"bornwolf_1p",
+    #"bornwolf_2p",
     "gaussian_2p",
 ]
 
