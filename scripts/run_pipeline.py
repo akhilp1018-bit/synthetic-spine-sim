@@ -104,20 +104,38 @@ EXPERIMENTS = [
 # ----------------------------------------------------------
 # Mesh preprocessing
 # ----------------------------------------------------------
-SCALE_TO_NM = 1000000    # mesh exported in nm from Blender
+SCALE_TO_NM = 1000000    # for sample 1 1000000, for sample 4 its 1
 RECENTER    = False   # keep False for aligned submeshes
 
 
 # ----------------------------------------------------------
 # PSF / Imaging model
 # ----------------------------------------------------------
-USE_GAUSSIAN_PSF    = False
+# PSF modes:
+#   "bornwolf_1p"  = original Born-Wolf PSF, linear / 1P-like
+#   "bornwolf_2p"  = Born-Wolf PSF squared + normalized, more 2P-like
+#   "gaussian_2p"  = Gaussian PSF generated for current resolution, squared + normalized
+#
+# Each PSF mode is saved into a separate output folder:
+#   outputs/sample_001/<experiment_tag>/<psf_mode>/
+PSF_MODES = [
+     "bornwolf_1p",   # already generated before; uncomment if you want to rerun it
+    "bornwolf_2p",
+    "gaussian_2p",
+]
+
 PSF_EM_TIF          = "scripts/psf_bornwolf_488nm_NA1_xy94nm_z500nm_65x65x13.tif"
 #PSF_EM_TIF          = "scripts/psf_bornwolf_488nm_NA1_xy200nm_z500nm_65x65x13.tif"
+
 LAMBDA_NM           = 488.0
 NA                  = 1.0
 REF_INDEX           = 1.33
 GAUSS_PSF_SHAPE_ZYX = (13, 65, 65)
+
+# Gaussian tuning. Keep 1.0 first.
+# Lower sigma_scale_z gives less far-plane blur.
+GAUSS_SIGMA_SCALE_XY = 1.0
+GAUSS_SIGMA_SCALE_Z  = 1.0
 
 
 # ----------------------------------------------------------
@@ -203,12 +221,12 @@ for exp in EXPERIMENTS:
     z_step_um    = float(exp["z_step_um"])
     spacing_nm   = float(exp["spacing_nm"])
 
-    OUT_DIR = os.path.join(OUT_ROOT, exp_tag)
-    os.makedirs(OUT_DIR, exist_ok=True)
+    EXP_OUT_DIR = os.path.join(OUT_ROOT, exp_tag)
+    os.makedirs(EXP_OUT_DIR, exist_ok=True)
 
     print("\n" + "#" * 60)
     print(f"Experiment : {exp_tag}")
-    print(f"Output     : {OUT_DIR}")
+    print(f"Base output: {EXP_OUT_DIR}")
     print("#" * 60)
 
     # ----------------------------------------------------------
@@ -226,26 +244,6 @@ for exp in EXPERIMENTS:
     origin_nm         = grid["origin_nm"]
     shape_zyx         = grid["shape_zyx"]
     voxel_size_nm_xyz = grid["voxel_size_nm_xyz"]
-
-    # ----------------------------------------------------------
-    # PSF
-    # ----------------------------------------------------------
-    if USE_GAUSSIAN_PSF:
-        psf_eff = make_gaussian_psf_matched_zyx(
-            shape_zyx    = GAUSS_PSF_SHAPE_ZYX,
-            lambda_nm    = LAMBDA_NM,
-            na           = NA,
-            n            = REF_INDEX,
-            xy_um_per_px = xy_um_per_px,
-            z_step_um    = z_step_um,
-        )
-        psf_tag = "gaussian_matched"
-    else:
-        psf_eff = load_psf_zyx(PSF_EM_TIF)
-        psf_tag = "bornwolf_fiji"
-
-    psf_eff = ensure_psf_odd_xy(psf_eff, renormalize=True, device=device)
-    print(f"PSF : {psf_tag}  shape={tuple(psf_eff.shape)}")
 
     # ----------------------------------------------------------
     # Shared density kwargs
@@ -267,156 +265,210 @@ for exp in EXPERIMENTS:
         intensity_var_seed       = INTENSITY_VAR_SEED,
     )
 
-    base_tag = f"{SAMPLE_NAME}_{LABELING_MODE}_{psf_tag}_{exp_tag}"
+    for psf_mode in PSF_MODES:
 
-    # ==========================================================
-    # PASS 1: Build combined density + render + save
-    # FULLY memory efficient:
-    # - One spine density at a time
-    # - Render + save + delete each volume immediately
-    # - Never more than 1 density + 1 volume in GPU at once!
-    # ==========================================================
-    print("\n--- Pass 1: Building combined density ---")
+        # ----------------------------------------------------------
+        # PSF
+        # ----------------------------------------------------------
+        if psf_mode == "bornwolf_1p":
+            psf_eff = load_psf_zyx(
+                PSF_EM_TIF,
+                two_photon_like=False,
+                verbose=True,
+            )
+            psf_tag = "bornwolf_1p"
 
-    rho_dendrite = build_density_for_mesh(
-        sim_dendrite_path, tag="dendrite", **density_kwargs
-    )
+        elif psf_mode == "bornwolf_2p":
+            psf_eff = load_psf_zyx(
+                PSF_EM_TIF,
+                two_photon_like=True,
+                verbose=True,
+            )
+            psf_tag = "bornwolf_2p"
 
-    # Accumulate spine densities one at a time
-    rho_spines = torch.zeros_like(rho_dendrite)
-    for i, sp in enumerate(sim_spine_paths, start=1):
-        rho_sp     = build_density_for_mesh(sp, tag=f"spine_{i}", **density_kwargs)
-        rho_spines = rho_spines + rho_sp
-        del rho_sp
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
+        elif psf_mode == "gaussian_2p":
+            psf_eff = make_gaussian_psf_matched_zyx(
+                shape_zyx       = GAUSS_PSF_SHAPE_ZYX,
+                lambda_nm       = LAMBDA_NM,
+                na              = NA,
+                n               = REF_INDEX,
+                xy_um_per_px    = xy_um_per_px,
+                z_step_um       = z_step_um,
+                sigma_scale_xy  = GAUSS_SIGMA_SCALE_XY,
+                sigma_scale_z   = GAUSS_SIGMA_SCALE_Z,
+                two_photon_like = True,
+                verbose         = True,
+            )
+            psf_tag = "gaussian_2p"
 
-    rho_all = rho_dendrite + rho_spines
+        else:
+            raise ValueError(
+                "Unknown psf_mode. Use 'bornwolf_1p', 'bornwolf_2p', or 'gaussian_2p'."
+            )
 
-    print("\n--- Rendering and saving combined image ---")
+        psf_eff = ensure_psf_odd_xy(psf_eff, renormalize=True, device=device)
 
-    # Render all → save image → delete immediately
-    vol_all = render_density(rho_all, psf_eff, "all", device)
-    del rho_all
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-    save_u16_stack(tensor_to_u16_stack(vol_all), OUT_DIR, f"{base_tag}_image", xy_um_per_px, z_step_um)
-    del vol_all
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+        OUT_DIR = os.path.join(EXP_OUT_DIR, psf_tag)
+        os.makedirs(OUT_DIR, exist_ok=True)
 
-    # Render spines → create mask → save → delete immediately
-    vol_spines = render_density(rho_spines, psf_eff, "spines", device)
-    del rho_spines
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+        base_tag = f"{SAMPLE_NAME}_{LABELING_MODE}_{psf_tag}_{exp_tag}"
 
-    # Save clean combined spines-only image
-    save_u16_stack(
-        tensor_to_u16_stack(vol_spines),
-        OUT_DIR,
-        f"{base_tag}_spines_clean",
-        xy_um_per_px,
-        z_step_um,
-    )
+        print("\n" + "=" * 60)
+        print(f"PSF mode : {psf_tag}")
+        print(f"Output   : {OUT_DIR}")
+        print(f"PSF shape: {tuple(psf_eff.shape)}")
+        print("=" * 60)
+        # ==========================================================
+        # PASS 1: Build combined density + render + save
+        # FULLY memory efficient:
+        # - One spine density at a time
+        # - Render + save + delete each volume immediately
+        # - Never more than 1 density + 1 volume in GPU at once!
+        # ==========================================================
+        print("\n--- Pass 1: Building combined density ---")
 
-    spine_max    = float(vol_spines.max().item())
-    spine_thresh = SPINE_MASK_REL_THRESHOLD * spine_max if spine_max > 0 else 0.0
-    spine_mask   = (vol_spines > spine_thresh).to(torch.float32)
-    del vol_spines
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-    save_u16_stack(binary_mask_to_u16(spine_mask), OUT_DIR, f"{base_tag}_spine_mask", xy_um_per_px, z_step_um)
-    del spine_mask
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+        rho_dendrite = build_density_for_mesh(
+            sim_dendrite_path, tag="dendrite", **density_kwargs
+        )
 
-    # Render dendrite → create mask → save → delete immediately
-    vol_dendrite = render_density(rho_dendrite, psf_eff, "dendrite", device)
-    del rho_dendrite
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-
-    # Save clean dendrite-only image
-    save_u16_stack(
-        tensor_to_u16_stack(vol_dendrite),
-        OUT_DIR,
-        f"{base_tag}_dendrite_clean",
-        xy_um_per_px,
-        z_step_um,
-    )
-
-    dendrite_max = float(vol_dendrite.max().item())
-    dendrite_thresh = DENDRITE_MASK_REL_THRESHOLD * dendrite_max if dendrite_max > 0 else 0.0
-    dendrite_mask   = (vol_dendrite > dendrite_thresh).to(torch.float32)
-    del vol_dendrite
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-    save_u16_stack(binary_mask_to_u16(dendrite_mask), OUT_DIR, f"{base_tag}_dendrite_mask", xy_um_per_px, z_step_um)
-    del dendrite_mask
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-
-    # ==========================================================
-    # PASS 2: Individual spine masks (one at a time)
-    # ==========================================================
-    if SAVE_DEBUG_COMPONENTS:
-        print("\n--- Pass 2: Saving individual spine masks ---")
+        # Accumulate spine densities one at a time
+        rho_spines = torch.zeros_like(rho_dendrite)
         for i, sp in enumerate(sim_spine_paths, start=1):
-            rho_sp = build_density_for_mesh(sp, tag=f"spine_{i}_mask", **density_kwargs)
-            vol_sp = render_density(rho_sp, psf_eff, f"spine_{i}", device)
+            rho_sp     = build_density_for_mesh(sp, tag=f"spine_{i}", **density_kwargs)
+            rho_spines = rho_spines + rho_sp
             del rho_sp
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
-            sp_max    = float(vol_sp.max().item())
-            sp_thresh = SPINE_MASK_REL_THRESHOLD * sp_max if sp_max > 0 else 0.0
-            sp_mask_i = (vol_sp > sp_thresh).to(torch.float32)
+        rho_all = rho_dendrite + rho_spines
 
-            save_u16_stack(binary_mask_to_u16(sp_mask_i), OUT_DIR, f"{base_tag}_spine{i}_mask", xy_um_per_px, z_step_um)
+        print("\n--- Rendering and saving combined image ---")
 
-            if SAVE_DEBUG_CLEAN_IMAGES:
-                save_u16_stack(tensor_to_u16_stack(vol_sp), OUT_DIR, f"{base_tag}_spine{i}_clean", xy_um_per_px, z_step_um)
+        # Render all → save image → delete immediately
+        vol_all = render_density(rho_all, psf_eff, "all", device)
+        del rho_all
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        save_u16_stack(tensor_to_u16_stack(vol_all), OUT_DIR, f"{base_tag}_image", xy_um_per_px, z_step_um)
+        del vol_all
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
-            del vol_sp, sp_mask_i
-            if device.type == "cuda":
-                torch.cuda.empty_cache()
+        # Render spines → create mask → save → delete immediately
+        vol_spines = render_density(rho_spines, psf_eff, "spines", device)
+        del rho_spines
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
-    # ==========================================================
-    # Save metadata
-    # ==========================================================
-    meta_lines = [
-        "=== Simulation run metadata ===",
-        f"SAMPLE_NAME={SAMPLE_NAME}",
-        f"LABELING_MODE={LABELING_MODE}",
-        f"SCALE_TO_NM={SCALE_TO_NM}",
-        f"XY_UM_PER_PX={xy_um_per_px}",
-        f"Z_STEP_UM={z_step_um}",
-        f"SPACING_NM={spacing_nm}",
-        f"W={grid['W']}",
-        f"H={grid['H']}",
-        f"NUM_SLICES={grid['NUM_SLICES']}",
-        f"PSF_MODE={psf_tag}",
-        f"PSF_FILE={PSF_EM_TIF}",
-        f"LAMBDA_NM={LAMBDA_NM}",
-        f"NA={NA}",
-        f"REF_INDEX={REF_INDEX}",
-        f"NUM_SPINES={len(sim_spine_paths)}",
-        f"SPINE_MASK_REL_THRESHOLD={SPINE_MASK_REL_THRESHOLD}",
-        f"DENDRITE_MASK_REL_THRESHOLD={DENDRITE_MASK_REL_THRESHOLD}",
-        f"SAVE_DEBUG_COMPONENTS={SAVE_DEBUG_COMPONENTS}",
-        f"SAVE_DEBUG_CLEAN_IMAGES={SAVE_DEBUG_CLEAN_IMAGES}",
-        f"USE_ROI={USE_ROI}",
-        f"DEVICE={device}",
-    ]
-    save_run_metadata_txt(OUT_DIR, f"{base_tag}_image", meta_lines)
-    print(f"  Metadata saved.")
+        # Save clean combined spines-only image
+        save_u16_stack(
+            tensor_to_u16_stack(vol_spines),
+            OUT_DIR,
+            f"{base_tag}_spines_clean",
+            xy_um_per_px,
+            z_step_um,
+        )
 
-    # ==========================================================
-    # Cleanup
-    # ==========================================================
-    del psf_eff
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+        spine_max    = float(vol_spines.max().item())
+        spine_thresh = SPINE_MASK_REL_THRESHOLD * spine_max if spine_max > 0 else 0.0
+        spine_mask   = (vol_spines > spine_thresh).to(torch.float32)
+        del vol_spines
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        save_u16_stack(binary_mask_to_u16(spine_mask), OUT_DIR, f"{base_tag}_spine_mask", xy_um_per_px, z_step_um)
+        del spine_mask
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
-print("\nDone.")
+        # Render dendrite → create mask → save → delete immediately
+        vol_dendrite = render_density(rho_dendrite, psf_eff, "dendrite", device)
+        del rho_dendrite
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+        # Save clean dendrite-only image
+        save_u16_stack(
+            tensor_to_u16_stack(vol_dendrite),
+            OUT_DIR,
+            f"{base_tag}_dendrite_clean",
+            xy_um_per_px,
+            z_step_um,
+        )
+
+        dendrite_max = float(vol_dendrite.max().item())
+        dendrite_thresh = DENDRITE_MASK_REL_THRESHOLD * dendrite_max if dendrite_max > 0 else 0.0
+        dendrite_mask   = (vol_dendrite > dendrite_thresh).to(torch.float32)
+        del vol_dendrite
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        save_u16_stack(binary_mask_to_u16(dendrite_mask), OUT_DIR, f"{base_tag}_dendrite_mask", xy_um_per_px, z_step_um)
+        del dendrite_mask
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+        # ==========================================================
+        # PASS 2: Individual spine masks (one at a time)
+        # ==========================================================
+        if SAVE_DEBUG_COMPONENTS:
+            print("\n--- Pass 2: Saving individual spine masks ---")
+            for i, sp in enumerate(sim_spine_paths, start=1):
+                rho_sp = build_density_for_mesh(sp, tag=f"spine_{i}_mask", **density_kwargs)
+                vol_sp = render_density(rho_sp, psf_eff, f"spine_{i}", device)
+                del rho_sp
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+
+                sp_max    = float(vol_sp.max().item())
+                sp_thresh = SPINE_MASK_REL_THRESHOLD * sp_max if sp_max > 0 else 0.0
+                sp_mask_i = (vol_sp > sp_thresh).to(torch.float32)
+
+                save_u16_stack(binary_mask_to_u16(sp_mask_i), OUT_DIR, f"{base_tag}_spine{i}_mask", xy_um_per_px, z_step_um)
+
+                if SAVE_DEBUG_CLEAN_IMAGES:
+                    save_u16_stack(tensor_to_u16_stack(vol_sp), OUT_DIR, f"{base_tag}_spine{i}_clean", xy_um_per_px, z_step_um)
+
+                del vol_sp, sp_mask_i
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+
+        # ==========================================================
+        # Save metadata
+        # ==========================================================
+        meta_lines = [
+            "=== Simulation run metadata ===",
+            f"SAMPLE_NAME={SAMPLE_NAME}",
+            f"LABELING_MODE={LABELING_MODE}",
+            f"SCALE_TO_NM={SCALE_TO_NM}",
+            f"XY_UM_PER_PX={xy_um_per_px}",
+            f"Z_STEP_UM={z_step_um}",
+            f"SPACING_NM={spacing_nm}",
+            f"W={grid['W']}",
+            f"H={grid['H']}",
+            f"NUM_SLICES={grid['NUM_SLICES']}",
+            f"PSF_MODE={psf_tag}",
+            f"PSF_FILE={PSF_EM_TIF}",
+            f"PSF_SETTING={psf_mode}",
+            f"GAUSS_SIGMA_SCALE_XY={GAUSS_SIGMA_SCALE_XY}",
+            f"GAUSS_SIGMA_SCALE_Z={GAUSS_SIGMA_SCALE_Z}",
+            f"LAMBDA_NM={LAMBDA_NM}",
+            f"NA={NA}",
+            f"REF_INDEX={REF_INDEX}",
+            f"NUM_SPINES={len(sim_spine_paths)}",
+            f"SPINE_MASK_REL_THRESHOLD={SPINE_MASK_REL_THRESHOLD}",
+            f"DENDRITE_MASK_REL_THRESHOLD={DENDRITE_MASK_REL_THRESHOLD}",
+            f"SAVE_DEBUG_COMPONENTS={SAVE_DEBUG_COMPONENTS}",
+            f"SAVE_DEBUG_CLEAN_IMAGES={SAVE_DEBUG_CLEAN_IMAGES}",
+            f"USE_ROI={USE_ROI}",
+            f"DEVICE={device}",
+        ]
+        save_run_metadata_txt(OUT_DIR, f"{base_tag}_image", meta_lines)
+        print(f"  Metadata saved.")
+
+        # ==========================================================
+        # Cleanup
+        # ==========================================================
+        del psf_eff
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    print("\nDone.")
