@@ -73,7 +73,7 @@ SAMPLES = [
 # ----------------------------------------------------------
 # Output
 # ----------------------------------------------------------
-OUT_ROOT = "training_data_gaussian_2p_render_masks_test"
+OUT_ROOT = "training_data_gaussian_2p_render_masks_filtered_test"
 NUM_INSTANCES = 5          # first test run; change to 1000 for final run
 
 # ----------------------------------------------------------
@@ -130,9 +130,18 @@ NOISE_SEED_BASE = 1234
 # ----------------------------------------------------------
 # Skip empty crops
 # ----------------------------------------------------------
-MIN_SPINES_IN_FOV = 1
+# Require more than one spine and enough visible foreground.
+# This avoids patches where only a tiny object appears and the rest is black.
+MIN_SPINES_IN_FOV = 3
 MIN_SPINE_MASK_VOXELS = 1
-MAX_TRANSFORM_TRIES = 50
+
+# MIP-level foreground checks, for a 128x128 patch.
+# These are deliberately mild. If too many attempts are rejected, lower them.
+MIN_IMAGE_MIP_PIXELS = 500
+MIN_DENDRITE_MIP_PIXELS = 150
+MIN_SPINE_MIP_PIXELS = 20
+
+MAX_TRANSFORM_TRIES = 80
 
 
 # ==========================================================
@@ -291,6 +300,10 @@ def main():
     print(f"Spine thresh : {SPINE_MASK_REL_THRESHOLD} * max(rendered_spines)")
     print(f"Dend thresh  : {DENDRITE_MASK_REL_THRESHOLD} * max(rendered_dendrite)")
     print(f"Noise        : {USE_NOISE}")
+    print(f"Min spines   : {MIN_SPINES_IN_FOV}")
+    print(f"Min image MIP pixels    : {MIN_IMAGE_MIP_PIXELS}")
+    print(f"Min dendrite MIP pixels : {MIN_DENDRITE_MIP_PIXELS}")
+    print(f"Min spine MIP pixels    : {MIN_SPINE_MIP_PIXELS}")
     print("=" * 80)
 
     for cfg in SAMPLES:
@@ -453,6 +466,32 @@ def main():
                 continue
 
             # ------------------------------------------------------
+            # Reject very empty-looking patches.
+            # Andreas asked why only a small object appears and the rest is black.
+            # These checks keep only crops with enough visible structure in the XY MIP.
+            # ------------------------------------------------------
+            image_mip_pixels = int(np.count_nonzero(image_8bit.max(axis=0) > 5))
+            spine_mip_pixels = int(np.count_nonzero(spine_mask_8bit.max(axis=0) > 0))
+            dendrite_mip_pixels = int(np.count_nonzero(dendrite_mask_8bit.max(axis=0) > 0))
+
+            if (
+                image_mip_pixels < MIN_IMAGE_MIP_PIXELS
+                or dendrite_mip_pixels < MIN_DENDRITE_MIP_PIXELS
+                or spine_mip_pixels < MIN_SPINE_MIP_PIXELS
+            ):
+                print(
+                    "  Patch too empty, retrying. "
+                    f"image_mip_pixels={image_mip_pixels}, "
+                    f"dendrite_mip_pixels={dendrite_mip_pixels}, "
+                    f"spine_mip_pixels={spine_mip_pixels}"
+                )
+                cleanup_temp_meshes(transform)
+                del rho_dendrite, rho_spines, vol_dendrite, vol_spines, vol_all, psf_eff
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+                continue
+
+            # ------------------------------------------------------
             # Save
             # ------------------------------------------------------
             save_instance(instance_dir, image_8bit, spine_mask_8bit, dendrite_mask_8bit)
@@ -477,6 +516,9 @@ def main():
                 "spines_in_fov": len(transform["sim_spine_paths"]),
                 "spine_mask_voxels": spine_mask_voxels,
                 "dendrite_mask_voxels": dendrite_mask_voxels,
+                "image_mip_pixels": image_mip_pixels,
+                "spine_mip_pixels": spine_mip_pixels,
+                "dendrite_mip_pixels": dendrite_mip_pixels,
                 "labeling_mode": LABELING_MODE,
                 "spacing_nm": SPACING_NM,
                 "density_smooth_sigma_zyx": DENSITY_SMOOTH_SIGMA_ZYX,
@@ -498,6 +540,9 @@ def main():
                 "spines_in_fov": len(transform["sim_spine_paths"]),
                 "spine_mask_voxels": spine_mask_voxels,
                 "dendrite_mask_voxels": dendrite_mask_voxels,
+                "image_mip_pixels": image_mip_pixels,
+                "spine_mip_pixels": spine_mip_pixels,
+                "dendrite_mip_pixels": dendrite_mip_pixels,
                 "use_noise": USE_NOISE,
             })
 
