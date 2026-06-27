@@ -68,15 +68,26 @@ for PSF in "${PSFS[@]}"; do
 
         python -m deepd3.inference.batch "$IMAGE" "$MODEL"
 
-        PRED_FILE="${IMAGE}.prediction"
+        # DeepD3 may save either:
+        #   image.tif.prediction
+        # or:
+        #   image.prediction
+        PRED_FILE_1="${IMAGE}.prediction"
+        PRED_FILE_2="${IMAGE%.tif}.prediction"
 
-        if [ -f "$PRED_FILE" ]; then
-            mv "$PRED_FILE" "$OUT_FILE"
+        if [ -f "$PRED_FILE_1" ]; then
+            mv "$PRED_FILE_1" "$OUT_FILE"
+            echo "Saved prediction:"
+            echo "  $OUT_FILE"
+        elif [ -f "$PRED_FILE_2" ]; then
+            mv "$PRED_FILE_2" "$OUT_FILE"
             echo "Saved prediction:"
             echo "  $OUT_FILE"
         else
-            echo "ERROR: DeepD3 prediction file not found:"
-            echo "  $PRED_FILE"
+            echo "ERROR: DeepD3 prediction file not found."
+            echo "Checked:"
+            echo "  $PRED_FILE_1"
+            echo "  $PRED_FILE_2"
             exit 1
         fi
 
