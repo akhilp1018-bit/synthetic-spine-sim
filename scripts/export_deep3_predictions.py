@@ -1,6 +1,6 @@
 """
-export_deepd3_predictions.py
------------------------------
+export_deep3_predictions.py
+----------------------------
 Export DeepD3 .prediction files to uint16 TIFF files
 for visualization in Fiji and evaluation.
 
@@ -36,8 +36,16 @@ def save_u16_tif(path, arr):
     """
     Save probability map as uint16 TIFF.
     DeepD3 outputs [0, 1] floats -> [0, 65535] uint16.
+
+    NaN values are replaced by 0.
+    +inf values are replaced by 1.
+    -inf values are replaced by 0.
     """
     arr = arr.astype(np.float32)
+
+    # Important fix: DeepD3 can produce NaNs in dendrite channel
+    arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
+
     arr = np.clip(arr, 0, 1)
     arr_u16 = (arr * 65535).astype(np.uint16)
 
@@ -74,16 +82,26 @@ for psf_mode in PSF_MODES:
         print(f"\nProcessing {model_name}: {pred_path}")
 
         data = fl.load(pred_path)
+
         dendrites = data["dendrites"]
         spines = data["spines"]
 
+        # Print raw stats before NaN cleanup
+        dendrite_nan_count = int(np.isnan(dendrites).sum())
+        spine_nan_count = int(np.isnan(spines).sum())
+
         print(
             f"  dendrites: shape={dendrites.shape} "
-            f"min={dendrites.min():.4f} max={dendrites.max():.4f}"
+            f"nan_count={dendrite_nan_count} "
+            f"nanmin={np.nanmin(dendrites):.4f} "
+            f"nanmax={np.nanmax(dendrites):.4f}"
         )
+
         print(
             f"  spines   : shape={spines.shape} "
-            f"min={spines.min():.4f} max={spines.max():.4f}"
+            f"nan_count={spine_nan_count} "
+            f"nanmin={np.nanmin(spines):.4f} "
+            f"nanmax={np.nanmax(spines):.4f}"
         )
 
         save_u16_tif(
