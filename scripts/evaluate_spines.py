@@ -47,6 +47,19 @@ MODEL_FILES = {
     "DeepD3_32F": "32F_spine_probability.tif",
 }
 
+# Keep the same model order and colors in every plot.
+# This avoids the confusing situation where one plot assigns
+# blue/orange differently from another plot.
+MODEL_ORDER = [
+    "DeepD3_32F_94nm",  # blue
+    "DeepD3_32F",       # orange
+]
+
+MODEL_COLORS = {
+    "DeepD3_32F_94nm": "tab:blue",
+    "DeepD3_32F": "tab:orange",
+}
+
 GT_CSV = os.path.join(BASE_DIR, "spine_annotations.csv")
 
 XY_NM = 94.0
@@ -240,11 +253,41 @@ def compute_ap(recalls, precisions):
     return float(np.trapezoid(prec_sorted, rec_sorted))
 
 
+def iter_models_present(model_names):
+    """
+    Yield models in MODEL_ORDER first, then any unexpected model names.
+    This keeps colors and legend order consistent across all plots.
+    """
+    seen = set()
+
+    for model_name in MODEL_ORDER:
+        if model_name in model_names:
+            seen.add(model_name)
+            yield model_name
+
+    for model_name in model_names:
+        if model_name not in seen:
+            yield model_name
+
+
+def model_color(model_name):
+    """
+    Return the fixed color for known models.
+    Unknown models use matplotlib default colors.
+    """
+    return MODEL_COLORS.get(model_name, None)
+
+
 def plot_pr_curve(pr_results, out_path, title):
     """
     Cleaner PR curve for object-wise spine detection.
 
-    Changes:
+    Important fix:
+    - Uses fixed MODEL_ORDER and MODEL_COLORS.
+    - Therefore DeepD3_32F_94nm is always blue.
+    - DeepD3_32F is always orange.
+
+    Other behavior:
     - No artificial Ideal (1, 1) point.
     - No sorting by recall. Points stay in threshold order.
     - Thresholds with zero predicted peaks are removed from the plot,
@@ -252,7 +295,9 @@ def plot_pr_curve(pr_results, out_path, title):
     """
     plt.figure(figsize=(8, 6))
 
-    for model_name, res in pr_results.items():
+    for model_name in iter_models_present(pr_results.keys()):
+        res = pr_results[model_name]
+
         recalls = np.array(res["recalls"], dtype=np.float64)
         precisions = np.array(res["precisions"], dtype=np.float64)
         n_preds = np.array(res["n_preds"], dtype=np.int64)
@@ -269,6 +314,7 @@ def plot_pr_curve(pr_results, out_path, title):
             marker="o",
             markersize=3,
             linewidth=1.5,
+            color=model_color(model_name),
             label=f"{model_name} (AP={res['ap']:.3f})",
         )
 
@@ -283,14 +329,32 @@ def plot_pr_curve(pr_results, out_path, title):
     plt.savefig(out_path, dpi=150)
     plt.close()
 
+
 def plot_iou_dice(iou_df, out_path, title):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    for model_name in sorted(iou_df["model"].unique()):
+    for model_name in iter_models_present(iou_df["model"].unique()):
         df = iou_df[iou_df["model"] == model_name]
 
-        axes[0].plot(df["threshold"], df["iou"], marker="o", markersize=3, label=model_name)
-        axes[1].plot(df["threshold"], df["dice"], marker="o", markersize=3, label=model_name)
+        if df.empty:
+            continue
+
+        axes[0].plot(
+            df["threshold"],
+            df["iou"],
+            marker="o",
+            markersize=3,
+            color=model_color(model_name),
+            label=model_name,
+        )
+        axes[1].plot(
+            df["threshold"],
+            df["dice"],
+            marker="o",
+            markersize=3,
+            color=model_color(model_name),
+            label=model_name,
+        )
 
     axes[0].set_xlabel("Probability threshold", fontsize=12)
     axes[0].set_ylabel("IoU", fontsize=12)
@@ -317,8 +381,11 @@ def plot_iou_dice(iou_df, out_path, title):
 def plot_recall_vs_distance(dist_df, out_path, title):
     plt.figure(figsize=(8, 6))
 
-    for model_name in sorted(dist_df["model"].unique()):
+    for model_name in iter_models_present(dist_df["model"].unique()):
         df = dist_df[dist_df["model"] == model_name]
+
+        if df.empty:
+            continue
 
         plt.plot(
             df["distance_um"],
@@ -326,6 +393,7 @@ def plot_recall_vs_distance(dist_df, out_path, title):
             marker="o",
             markersize=3,
             linewidth=1.5,
+            color=model_color(model_name),
             label=model_name,
         )
 
@@ -381,7 +449,8 @@ for psf_mode in PSF_MODES:
     pr_results = {}
     summary_rows = []
 
-    for model_name, model_file in MODEL_FILES.items():
+    for model_name in iter_models_present(MODEL_FILES.keys()):
+        model_file = MODEL_FILES[model_name]
         spine_prob_path = os.path.join(export_dir, model_file)
 
         if not os.path.exists(spine_prob_path):
